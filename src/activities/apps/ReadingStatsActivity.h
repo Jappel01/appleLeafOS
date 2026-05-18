@@ -11,6 +11,7 @@ class ReadingStatsActivity final : public Activity {
   bool waitForConfirmRelease = false;
   bool waitForBackRelease = false;
   void openSelectedEntry();
+  void confirmRemoveSelectedBook();
   void guardBackReturn();
 
  public:
