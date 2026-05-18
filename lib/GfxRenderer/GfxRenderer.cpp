@@ -1049,9 +1049,9 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
   HalDisplay::RefreshMode effectiveRefreshMode = refreshMode;
-  if (nextRefreshFull) {
-    effectiveRefreshMode = HalDisplay::FULL_REFRESH;
-    nextRefreshFull = false;
+  if (nextRefreshOverridePending) {
+    effectiveRefreshMode = nextRefreshOverride;
+    nextRefreshOverridePending = false;
   }
   display.displayBuffer(effectiveRefreshMode, fadingFix);
 }

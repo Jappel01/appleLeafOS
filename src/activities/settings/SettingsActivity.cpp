@@ -76,6 +76,8 @@ const std::vector<SettingInfo>& getDeviceDisplaySettings() {
                         {StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_CUSTOM, StrId::STR_THEME_LYRA_CAROUSEL}),
       SettingInfo::Enum(StrId::STR_HOME_BOOK_SOURCE, &CrossPointSettings::homeBookSource,
                         {StrId::STR_RECENTS, StrId::STR_FAVORITES}),
+      SettingInfo::Toggle(StrId::STR_ANTI_GHOSTING_EXPERIMENTAL,
+                          &CrossPointSettings::antiGhostingExperimental),
       SettingInfo::Toggle(StrId::STR_DARK_MODE, &CrossPointSettings::darkMode),
       SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix),
   };

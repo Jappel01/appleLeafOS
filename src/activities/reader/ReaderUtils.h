@@ -117,6 +117,14 @@ inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntil
   }
 }
 
+inline void requestReaderUiTransitionRefresh(GfxRenderer& renderer) {
+  if (SETTINGS.darkMode || renderer.isDarkMode()) {
+    return;
+  }
+
+  renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
+}
+
 // Grayscale anti-aliasing pass. Renders content twice (LSB + MSB) to build
 // the grayscale buffer. Only the content callback is re-rendered — status bars
 // and other overlays should be drawn before calling this.

@@ -301,6 +301,7 @@ class CrossPointSettings {
   uint8_t uiTheme = LYRA_CUSTOM;
   // Experimental global dark mode for the device UI and supported readers.
   uint8_t darkMode = 0;
+  uint8_t antiGhostingExperimental = 0;
   // Home/apps helpers
   uint8_t displayDay = 1;
   uint8_t autoSyncDay = 1;

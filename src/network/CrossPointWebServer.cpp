@@ -309,6 +309,8 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
     WEB_ENUM(StrId::STR_UI_THEME, uiTheme, OPT_UI_THEME, "uiTheme", StrId::STR_CAT_DISPLAY),
     WEB_ENUM(StrId::STR_HOME_BOOK_SOURCE, homeBookSource, OPT_HOME_BOOK_SOURCE, "homeBookSource",
              StrId::STR_CAT_DISPLAY),
+    WEB_TOGGLE(StrId::STR_ANTI_GHOSTING_EXPERIMENTAL, antiGhostingExperimental, "antiGhostingExperimental",
+               StrId::STR_CAT_DISPLAY),
     WEB_TOGGLE(StrId::STR_DARK_MODE, darkMode, "darkMode", StrId::STR_CAT_DISPLAY),
     WEB_TOGGLE(StrId::STR_SUNLIGHT_FADING_FIX, fadingFix, "fadingFix", StrId::STR_CAT_DISPLAY),
 

@@ -128,6 +128,8 @@ void XtcReaderActivity::onEnter() {
 void XtcReaderActivity::onExit() {
   Activity::onExit();
 
+  ReaderUtils::requestReaderUiTransitionRefresh(renderer);
+
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   READING_STATS.endSession();
@@ -161,6 +163,7 @@ void XtcReaderActivity::loop() {
     firstConfirmClickMs = 0UL;
     if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
       READING_STATS.noteActivity();
+      ReaderUtils::requestReaderUiTransitionRefresh(renderer);
       startActivityForResult(
           std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
           [this](const ActivityResult& result) {

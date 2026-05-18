@@ -54,7 +54,8 @@ class GfxRenderer {
   std::vector<uint8_t*> bwBufferChunks;
   std::map<int, EpdFontFamily> fontMap;
   mutable std::map<int, SdCardFont*> sdCardFonts_;
-  mutable bool nextRefreshFull = false;
+  mutable bool nextRefreshOverridePending = false;
+  mutable HalDisplay::RefreshMode nextRefreshOverride = HalDisplay::FAST_REFRESH;
 
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
@@ -105,7 +106,11 @@ class GfxRenderer {
   void setFadingFix(const bool enabled) { fadingFix = enabled; }
   void setDarkMode(const bool enabled) { darkMode = enabled; }
   bool isDarkMode() const { return darkMode; }
-  void requestNextFullRefresh() const { nextRefreshFull = true; }
+  void requestNextRefresh(const HalDisplay::RefreshMode mode) const {
+    nextRefreshOverride = mode;
+    nextRefreshOverridePending = true;
+  }
+  void requestNextFullRefresh() const { requestNextRefresh(HalDisplay::FULL_REFRESH); }
   void setTextDarkness(const uint8_t d) { textDarkness = d; }
   uint8_t getTextDarkness() const { return textDarkness; }
 

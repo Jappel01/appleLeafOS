@@ -2,6 +2,11 @@
 
 #include <HalPowerManager.h>
 
+#include <algorithm>
+
+#include "../CrossPointSettings.h"
+#include "../CrossPointState.h"
+#include "Activity.h"
 #include "OpdsServerStore.h"
 #include "apps/AppsActivity.h"
 #include "boot_sleep/BootActivity.h"
@@ -14,10 +19,40 @@
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/KOReaderSyncActivity.h"
 #include "reader/ReaderActivity.h"
-#include "../CrossPointState.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
+
+namespace {
+constexpr uint8_t AUTO_UI_REFRESH_DEBT_THRESHOLD = 4;
+constexpr uint8_t AUTO_UI_REFRESH_DEBT_MAX = 6;
+}  // namespace
+
+void ActivityManager::requestUiTransitionRefresh(const uint8_t previousWeight, const uint8_t nextWeight) {
+  if (SETTINGS.darkMode || renderer.isDarkMode()) {
+    autoUiRefreshDebt = 0;
+    return;
+  }
+
+  if (!SETTINGS.antiGhostingExperimental) {
+    autoUiRefreshDebt = 0;
+    return;
+  }
+
+  const uint8_t transitionWeight = std::max(previousWeight, nextWeight);
+  if (transitionWeight == 0) {
+    if (autoUiRefreshDebt > 0) {
+      --autoUiRefreshDebt;
+    }
+    return;
+  }
+
+  autoUiRefreshDebt = std::min<uint8_t>(AUTO_UI_REFRESH_DEBT_MAX, autoUiRefreshDebt + transitionWeight);
+  if (autoUiRefreshDebt >= AUTO_UI_REFRESH_DEBT_THRESHOLD) {
+    autoUiRefreshDebt = 0;
+    renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
+  }
+}
 
 void ActivityManager::begin() {
   xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
@@ -74,6 +109,7 @@ void ActivityManager::loop() {
       }
 
       ActivityResult pendingResult = std::move(currentActivity->result);
+      const uint8_t previousWeight = currentActivity->getUiTransitionRefreshWeight();
 
       // Destroy the current activity
       exitActivity(lock);
@@ -81,6 +117,7 @@ void ActivityManager::loop() {
 
       if (stackActivities.empty()) {
         LOG_DBG("ACT", "No more activities on stack, going home");
+        deferredPreviousUiRefreshWeight = previousWeight;
         lock.unlock();  // goHome may acquire its own lock
         goHome();
         continue;  // Will launch goHome immediately
@@ -89,6 +126,7 @@ void ActivityManager::loop() {
         currentActivity = std::move(stackActivities.back());
         stackActivities.pop_back();
         mappedInput.armConfirmReleaseGuard();
+        requestUiTransitionRefresh(previousWeight, currentActivity->getUiTransitionRefreshWeight());
         LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
         // Handle result if necessary
         if (currentActivity->resultHandler) {
@@ -113,6 +151,11 @@ void ActivityManager::loop() {
     } else if (pendingActivity) {
       // Current activity has requested a new activity to be launched
       RenderLock lock;
+      uint8_t previousWeight = currentActivity ? currentActivity->getUiTransitionRefreshWeight()
+                                               : deferredPreviousUiRefreshWeight;
+      deferredPreviousUiRefreshWeight = 0;
+      const uint8_t nextWeight = pendingActivity ? pendingActivity->getUiTransitionRefreshWeight()
+                                                 : Activity::UI_TRANSITION_REFRESH_WEIGHT_NONE;
 
       if (pendingAction == PendingAction::Replace) {
         // Destroy the current activity
@@ -130,6 +173,7 @@ void ActivityManager::loop() {
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
       mappedInput.armConfirmReleaseGuard();
+      requestUiTransitionRefresh(previousWeight, nextWeight);
 
       lock.unlock();  // onEnter may acquire its own lock
       currentActivity->onEnter();
@@ -162,12 +206,18 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   if (currentActivity) {
     // Defer launch if we're currently in an activity, to avoid deleting the current activity
     // leading to the "delete this" problem
+    deferredPreviousUiRefreshWeight = 0;
     pendingActivity = std::move(newActivity);
     pendingAction = PendingAction::Replace;
   } else {
     // No current activity, safe to launch immediately
+    const uint8_t previousWeight = deferredPreviousUiRefreshWeight;
+    deferredPreviousUiRefreshWeight = 0;
+    const uint8_t nextWeight =
+        newActivity ? newActivity->getUiTransitionRefreshWeight() : Activity::UI_TRANSITION_REFRESH_WEIGHT_NONE;
     currentActivity = std::move(newActivity);
     mappedInput.armConfirmReleaseGuard();
+    requestUiTransitionRefresh(previousWeight, nextWeight);
     currentActivity->onEnter();
   }
 }

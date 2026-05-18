@@ -292,6 +292,7 @@ bool loadSettingsDirect(CrossPointSettings& s, const JsonDocument& doc, bool* ne
   }
   loadToggle("fadingFix", s.fadingFix);
   loadToggle("darkMode", s.darkMode);
+  loadToggle("antiGhostingExperimental", s.antiGhostingExperimental);
 
   const uint8_t rawFontFamily = doc["fontFamily"] | s.fontFamily;
   if (rawFontFamily >= static_cast<uint8_t>(CrossPointSettings::FONT_FAMILY_COUNT)) {
@@ -677,6 +678,7 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["uiThemeSchemaVersion"] = UI_THEME_SCHEMA_VERSION;
   doc["fadingFix"] = s.fadingFix;
   doc["darkMode"] = s.darkMode;
+  doc["antiGhostingExperimental"] = s.antiGhostingExperimental;
 
   doc["fontFamily"] = s.fontFamily;
   doc["fontFamilySchemaVersion"] = FONT_FAMILY_SCHEMA_VERSION;
