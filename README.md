@@ -44,10 +44,10 @@ The philosophy of this fork is simple: keep the firmware fast, stable, and focus
 |---|---|
 | Project | `CPR-vCodex` |
 | Device | `Xteink X4`; `Xteink X3` compatibility reported by users, not personally tested |
-| Current release (CPR-vCodex) build | [`1.3.0.9-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.3.0.9-cpr-vcodex) |
+| Current release (CPR-vCodex) build | [`1.3.0.10-cpr-vcodex`](https://github.com/franssjz/cpr-vcodex/releases/tag/1.3.0.10-cpr-vcodex) |
 | Latest SD font package | [`sd-fonts-m1-b4`](https://github.com/franssjz/cpr-vcodex/releases/tag/sd-fonts-m1-b4) |
 | Changelog | [CHANGELOG.md](./CHANGELOG.md) |
-| Latest release notes | - Manage Fonts now offers the official CrossPoint source for common fonts and CPR-vCodex for vCodex-only additions.<br>- The CPR-vCodex font manifest has been trimmed to vCodex-only `ChareInk`, avoiding duplicate slow downloads.<br>- Added Screen Clean, selected CrossPoint SDK/display/network fixes, denser-screen `HALF_REFRESH` transitions, and better long-text flashcard rendering. |
+| Latest release notes | - OTA update checks now read the CPR-vCodex Auto Flash firmware manifest instead of GitHub's generic `releases/latest` endpoint.<br>- SD-font releases are marked as prereleases so older OTA code ignores font packages and finds the latest firmware.<br>- Auto Flash sync now filters explicitly for stable `*-cpr-vcodex` firmware releases. |
 | Base firmware line | `CrossPoint Reader 1.3.0` |
 | Latest official commit reviewed | [`f39ba70`](https://github.com/crosspoint-reader/crosspoint-reader/commit/f39ba70) |
 | Latest official commit incorporated | Selected 1.3.0 SDK, display, font-manager, network, cache-cleanup, and file-transfer fixes through [`f39ba70`](https://github.com/crosspoint-reader/crosspoint-reader/commit/f39ba70) |
@@ -500,7 +500,7 @@ Each packaged dev build now keeps the base firmware line and the local flash ide
 Practical values to look at:
 
 - base firmware line: `CrossPoint Reader 1.3.0`
-- current release build style: `1.3.0.9-cpr-vcodex`
+- current release build style: `1.3.0.10-cpr-vcodex`
 - packaged artifact style: `artifacts/<version>-cpr-vcodex.bin`
 
 The incremental `.bNNNN` suffix exists specifically to help distinguish newer flashes from older ones on real hardware.
@@ -570,10 +570,10 @@ Release publishing:
 - before tagging, run:
 
 ```powershell
-python scripts/pre_release_check.py --tag 1.3.0.9-cpr-vcodex
+python scripts/pre_release_check.py --tag 1.3.0.10-cpr-vcodex
 ```
 
-- push a stable tag named like `1.3.0.9-cpr-vcodex`
+- push a stable tag named like `1.3.0.10-cpr-vcodex`
 - the release workflow builds `gh_release`, validates that the packaged artifact
   name matches the tag, and attaches only the flashable `<tag>.bin` to the GitHub Release
 - tagged CI release builds derive the firmware release number from the tag, not

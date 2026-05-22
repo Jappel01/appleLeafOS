@@ -16,12 +16,13 @@ DEFAULT_REPO = "franssjz/cpr-vcodex"
 APP_PARTITION_SIZE = 6_553_600
 MIN_FIRMWARE_SIZE = 1_000_000
 VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\.\d+(?:[.-][0-9A-Za-z]+)?-[0-9A-Za-z._-]*cpr-vcodex\b")
+FIRMWARE_TAG_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+(?:[.-][0-9A-Za-z]+)?-cpr-vcodex$")
 DOWNLOAD_URL_RE = re.compile(
     r"https://github\.com/[^/]+/[^/]+/releases/download/[^/]+/[^\"'\s<>]+\.bin"
 )
 
 
-def request_json(url: str, token: str | None) -> dict[str, Any]:
+def request_json(url: str, token: str | None) -> Any:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "cpr-vcodex-autoflash-sync",
@@ -63,6 +64,25 @@ def select_firmware_asset(release: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError(f"Could not choose firmware asset from release {tag}. Assets: {names}")
 
 
+def fetch_latest_firmware_release(repo: str, token: str | None) -> dict[str, Any]:
+    releases = request_json(f"https://api.github.com/repos/{repo}/releases?per_page=50", token)
+    if not isinstance(releases, list):
+        raise RuntimeError("GitHub releases response was not a list")
+
+    for release in releases:
+        if release.get("draft") or release.get("prerelease"):
+            continue
+
+        tag = str(release.get("tag_name", ""))
+        if not FIRMWARE_TAG_RE.fullmatch(tag):
+            continue
+
+        select_firmware_asset(release)
+        return release
+
+    raise RuntimeError("Could not find a stable CPR-vCodex firmware release")
+
+
 def write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(delete=False, dir=path.parent) as tmp:
@@ -86,10 +106,7 @@ def update_text_file(path: Path, tag: str, download_url: str) -> bool:
 
 
 def sync_autoflash(repo: str, project_dir: Path, token: str | None) -> str:
-    release = request_json(f"https://api.github.com/repos/{repo}/releases/latest", token)
-    if release.get("draft") or release.get("prerelease"):
-        raise RuntimeError(f"Latest release is not a stable published release: {release.get('tag_name')}")
-
+    release = fetch_latest_firmware_release(repo, token)
     tag = str(release["tag_name"])
     asset = select_firmware_asset(release)
     download_url = str(asset["browser_download_url"])

@@ -1,8 +1,8 @@
 #include "OtaUpdater.h"
 
+#include <FirmwareManifestJsonParser.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <ReleaseJsonParser.h>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -13,7 +13,7 @@
 #include "HttpDownloader.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/franssjz/cpr-vcodex/releases/latest";
+constexpr char firmwareManifestUrl[] = "https://franssjz.github.io/cpr-vcodex/firmware/manifest.json";
 constexpr char otaCachePath[] = "/.crosspoint/ota-update.bin";
 
 /*
@@ -89,7 +89,7 @@ esp_err_t event_handler(esp_http_client_event_t* event) {
   if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
   totalBytesReceived += event->data_len;
   LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
-  auto* parser = static_cast<ReleaseJsonParser*>(event->user_data);
+  auto* parser = static_cast<FirmwareManifestJsonParser*>(event->user_data);
   parser->feed(static_cast<const char*>(event->data), event->data_len);
   return ESP_OK;
 }
@@ -136,7 +136,7 @@ OtaUpdater::OtaUpdaterError mapFlashError(firmware_flash::Result result) {
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   esp_err_t esp_err;
-  ReleaseJsonParser releaseParser;
+  FirmwareManifestJsonParser manifestParser;
 
   updateAvailable = false;
   latestVersion.clear();
@@ -146,18 +146,18 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   totalSize = 0;
 
   esp_http_client_config_t client_config = {
-      .url = latestReleaseUrl,
+      .url = firmwareManifestUrl,
       .event_handler = event_handler,
-      .buffer_size = 4096,
+      .buffer_size = 2048,
       .buffer_size_tx = 1024,
-      .user_data = &releaseParser,
+      .user_data = &manifestParser,
       .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
 
   totalBytesReceived = 0;
-  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
+  LOG_DBG("OTA", "Checking firmware manifest (current: %s)", CROSSPOINT_VERSION);
 
   esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
   if (!client_handle) {
@@ -187,22 +187,16 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   }
 
   LOG_DBG("OTA", "Response received: %zu bytes total", totalBytesReceived);
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
+  LOG_DBG("OTA", "Manifest parser result: manifest=%s", manifestParser.foundManifest() ? "yes" : "no");
 
-  if (!releaseParser.foundTag()) {
-    LOG_ERR("OTA", "No tag_name in release JSON");
+  if (!manifestParser.foundManifest()) {
+    LOG_ERR("OTA", "Firmware manifest missing version or downloadUrl");
     return JSON_PARSE_ERROR;
   }
 
-  if (!releaseParser.foundFirmware()) {
-    LOG_ERR("OTA", "No OTA firmware asset found");
-    return NO_UPDATE;
-  }
-
-  latestVersion = releaseParser.getTagName();
-  otaUrl = releaseParser.getFirmwareUrl();
-  otaSize = releaseParser.getFirmwareSize();
+  latestVersion = manifestParser.getVersion();
+  otaUrl = manifestParser.getDownloadUrl();
+  otaSize = manifestParser.getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
 
