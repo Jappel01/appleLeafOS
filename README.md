@@ -92,18 +92,19 @@ SD:/
 
 ## Flashcards study modes
 
-`Flashcards` currently offers three review modes:
+`Flashcards` currently offers four review modes:
 
 - `Due`: builds a finite session from cards that are due first, then fills with unseen cards if needed. `Session size` is respected here, and `All` means "all due cards plus unseen cards".
 - `Scheduled`: builds a finite shuffled session from the whole deck. `Session size` is respected here, and `All` means the whole deck.
 - `Infinite`: ignores `Session size`, keeps drawing cards from the whole deck, and never finishes on its own. Exit manually when you want the session summary.
+- `Sequential`: uses every card in CSV order, ignores `Session size`, and finishes after the last card.
 
 Why it is split this way:
 
 - `Study mode` decides **which cards** enter the session
 - `Session size` decides **how many** of those cards are included
 
-`Fail` and `Next` send the current card back through the session flow. In `Infinite`, the queue is rebuilt again when a full pass is consumed, so practice can continue indefinitely.
+`Fail` and `Next` send the current card back through the session flow. In `Infinite`, the queue is rebuilt again when a full pass is consumed, so practice can continue indefinitely. In `Sequential`, the deck is kept in file order.
 
 Example CSV deck structure:
 
@@ -410,6 +411,7 @@ Study modes:
 - `Due`: finite review-oriented session, using due cards first and unseen cards second
 - `Scheduled`: finite shuffled session from the whole deck
 - `Infinite`: endless practice, ignores `Session size`
+- `Sequential`: whole deck in CSV order, ignores `Session size`
 
 Statistics:
 

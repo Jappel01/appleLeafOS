@@ -243,6 +243,18 @@ bool isInfiniteMode() {
   return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_INFINITE;
 }
 
+bool isSequentialMode() {
+  return SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL;
+}
+
+std::vector<int> buildDeckOrderQueue(const FlashcardDeck& deck) {
+  std::vector<int> queue(deck.cards.size());
+  for (int index = 0; index < static_cast<int>(deck.cards.size()); ++index) {
+    queue[index] = index;
+  }
+  return queue;
+}
+
 template <typename T>
 void shuffleVector(std::vector<T>& values) {
   if (values.size() < 2) {
@@ -647,12 +659,13 @@ std::vector<int> FlashcardsStore::buildSessionQueue(const FlashcardDeck& deck,
                                                     const std::vector<FlashcardCardProgress>& progress) const {
   std::vector<int> queue;
   if (isInfiniteMode()) {
-    queue.resize(deck.cards.size());
-    for (int index = 0; index < static_cast<int>(deck.cards.size()); ++index) {
-      queue[index] = index;
-    }
+    queue = buildDeckOrderQueue(deck);
     shuffleVector(queue);
     return queue;
+  }
+
+  if (isSequentialMode()) {
+    return buildDeckOrderQueue(deck);
   }
 
   const int sessionLimit = getConfiguredSessionLimit();
@@ -686,10 +699,7 @@ std::vector<int> FlashcardsStore::buildSessionQueue(const FlashcardDeck& deck,
                    unseenCards.begin() + std::min(remaining, static_cast<int>(unseenCards.size())));
     }
   } else {
-    queue.resize(deck.cards.size());
-    for (int index = 0; index < static_cast<int>(deck.cards.size()); ++index) {
-      queue[index] = index;
-    }
+    queue = buildDeckOrderQueue(deck);
     shuffleVector(queue);
   }
 
