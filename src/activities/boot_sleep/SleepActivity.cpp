@@ -754,9 +754,6 @@ bool SleepActivity::renderPngSleepScreen(const std::string& sourcePath) const {
   }
 
   displaySleepBuffer(renderer);
-  if (SETTINGS.cleanSleepRefresh) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-  }
   return true;
 }
 
