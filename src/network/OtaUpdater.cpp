@@ -3,6 +3,7 @@
 #include <FirmwareManifestJsonParser.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <ReleaseJsonParser.h>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -14,6 +15,7 @@
 
 namespace {
 constexpr char firmwareManifestUrl[] = "https://franssjz.github.io/cpr-vcodex/firmware/manifest.json";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/franssjz/cpr-vcodex/releases/latest";
 constexpr char otaCachePath[] = "/.crosspoint/ota-update.bin";
 
 /*
@@ -85,13 +87,67 @@ esp_err_t http_client_set_header_cb(esp_http_client_handle_t http_client) {
 
 size_t totalBytesReceived = 0;
 
-esp_err_t event_handler(esp_http_client_event_t* event) {
+esp_err_t manifest_event_handler(esp_http_client_event_t* event) {
   if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
   totalBytesReceived += event->data_len;
   LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
   auto* parser = static_cast<FirmwareManifestJsonParser*>(event->user_data);
   parser->feed(static_cast<const char*>(event->data), event->data_len);
   return ESP_OK;
+}
+
+esp_err_t release_event_handler(esp_http_client_event_t* event) {
+  if (event->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
+  totalBytesReceived += event->data_len;
+  LOG_DBG("OTA", "HTTP chunk: %d bytes (total: %zu)", event->data_len, totalBytesReceived);
+  auto* parser = static_cast<ReleaseJsonParser*>(event->user_data);
+  parser->feed(static_cast<const char*>(event->data), event->data_len);
+  return ESP_OK;
+}
+
+OtaUpdater::OtaUpdaterError performStreamingRequest(const char* url, esp_err_t (*eventHandler)(esp_http_client_event_t*),
+                                                    void* userData, const int bufferSize) {
+  esp_http_client_config_t client_config = {
+      .url = url,
+      .event_handler = eventHandler,
+      .buffer_size = bufferSize,
+      .buffer_size_tx = 1024,
+      .user_data = userData,
+      .skip_cert_common_name_check = true,
+      .crt_bundle_attach = esp_crt_bundle_attach,
+      .keep_alive_enable = true,
+  };
+
+  totalBytesReceived = 0;
+
+  esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
+  if (!client_handle) {
+    LOG_ERR("OTA", "HTTP Client Handle Failed");
+    return OtaUpdater::INTERNAL_UPDATE_ERROR;
+  }
+
+  const std::string userAgent = buildUserAgent();
+  esp_err_t esp_err = esp_http_client_set_header(client_handle, "User-Agent", userAgent.c_str());
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_http_client_set_header Failed : %s", esp_err_to_name(esp_err));
+    esp_http_client_cleanup(client_handle);
+    return OtaUpdater::INTERNAL_UPDATE_ERROR;
+  }
+
+  esp_err = esp_http_client_perform(client_handle);
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_http_client_perform Failed : %s", esp_err_to_name(esp_err));
+    esp_http_client_cleanup(client_handle);
+    return OtaUpdater::HTTP_ERROR;
+  }
+
+  esp_err = esp_http_client_cleanup(client_handle);
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_http_client_cleanup Failed : %s", esp_err_to_name(esp_err));
+    return OtaUpdater::INTERNAL_UPDATE_ERROR;
+  }
+
+  return OtaUpdater::OK;
 }
 
 class WifiPowerSaveGuard {
@@ -135,9 +191,6 @@ OtaUpdater::OtaUpdaterError mapFlashError(firmware_flash::Result result) {
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
-  esp_err_t esp_err;
-  FirmwareManifestJsonParser manifestParser;
-
   updateAvailable = false;
   latestVersion.clear();
   otaUrl.clear();
@@ -145,62 +198,56 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   processedSize = 0;
   totalSize = 0;
 
-  esp_http_client_config_t client_config = {
-      .url = firmwareManifestUrl,
-      .event_handler = event_handler,
-      .buffer_size = 2048,
-      .buffer_size_tx = 1024,
-      .user_data = &manifestParser,
-      .skip_cert_common_name_check = true,
-      .crt_bundle_attach = esp_crt_bundle_attach,
-      .keep_alive_enable = true,
-  };
-
-  totalBytesReceived = 0;
-  LOG_DBG("OTA", "Checking firmware manifest (current: %s)", CROSSPOINT_VERSION);
-
-  esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
-  if (!client_handle) {
-    LOG_ERR("OTA", "HTTP Client Handle Failed");
-    return INTERNAL_UPDATE_ERROR;
-  }
-
-  const std::string userAgent = buildUserAgent();
-  esp_err = esp_http_client_set_header(client_handle, "User-Agent", userAgent.c_str());
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_set_header Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
-    return INTERNAL_UPDATE_ERROR;
-  }
-
-  esp_err = esp_http_client_perform(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_perform Failed : %s", esp_err_to_name(esp_err));
-    esp_http_client_cleanup(client_handle);
-    return HTTP_ERROR;
-  }
-
-  esp_err = esp_http_client_cleanup(client_handle);
-  if (esp_err != ESP_OK) {
-    LOG_ERR("OTA", "esp_http_client_cleanup Failed : %s", esp_err_to_name(esp_err));
-    return INTERNAL_UPDATE_ERROR;
-  }
-
-  LOG_DBG("OTA", "Response received: %zu bytes total", totalBytesReceived);
+  FirmwareManifestJsonParser manifestParser;
+  LOG_DBG("OTA", "Checking firmware manifest (current: %s)", currentVersionString());
+  OtaUpdaterError manifestResult = performStreamingRequest(firmwareManifestUrl, manifest_event_handler, &manifestParser, 2048);
+  LOG_DBG("OTA", "Manifest response received: %zu bytes total", totalBytesReceived);
   LOG_DBG("OTA", "Manifest parser result: manifest=%s", manifestParser.foundManifest() ? "yes" : "no");
 
-  if (!manifestParser.foundManifest()) {
+  if (manifestResult == OK && manifestParser.foundManifest()) {
+    latestVersion = manifestParser.getVersion();
+    otaUrl = manifestParser.getDownloadUrl();
+    otaSize = manifestParser.getFirmwareSize();
+    totalSize = otaSize;
+    updateAvailable = true;
+    LOG_DBG("OTA", "Found update via manifest: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+    LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
+    return OK;
+  }
+
+  if (manifestResult == OK) {
     LOG_ERR("OTA", "Firmware manifest missing version or downloadUrl");
+    manifestResult = JSON_PARSE_ERROR;
+  }
+
+  ReleaseJsonParser releaseParser;
+  LOG_DBG("OTA", "Falling back to latest GitHub release after manifest check failed: %d", manifestResult);
+  const OtaUpdaterError releaseResult = performStreamingRequest(latestReleaseUrl, release_event_handler, &releaseParser, 4096);
+  LOG_DBG("OTA", "Release response received: %zu bytes total", totalBytesReceived);
+  LOG_DBG("OTA", "Release parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
+          releaseParser.foundFirmware() ? "yes" : "no");
+
+  if (releaseResult != OK) {
+    return manifestResult != OK ? manifestResult : releaseResult;
+  }
+
+  if (!releaseParser.foundTag()) {
+    LOG_ERR("OTA", "No tag_name in release JSON fallback");
     return JSON_PARSE_ERROR;
   }
 
-  latestVersion = manifestParser.getVersion();
-  otaUrl = manifestParser.getDownloadUrl();
-  otaSize = manifestParser.getFirmwareSize();
+  if (!releaseParser.foundFirmware()) {
+    LOG_ERR("OTA", "No OTA firmware asset found in release fallback");
+    return NO_UPDATE;
+  }
+
+  latestVersion = releaseParser.getTagName();
+  otaUrl = releaseParser.getFirmwareUrl();
+  otaSize = releaseParser.getFirmwareSize();
   totalSize = otaSize;
   updateAvailable = true;
 
-  LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+  LOG_DBG("OTA", "Found update via release fallback: tag=%s size=%zu", latestVersion.c_str(), otaSize);
   LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
   return OK;
 }

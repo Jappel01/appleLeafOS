@@ -54,6 +54,15 @@ void OtaUpdateActivity::checkForUpdateNow() {
   requestUpdateAndWait();
 
   const auto res = updater.checkForUpdate();
+  if (res == OtaUpdater::NO_UPDATE) {
+    LOG_DBG("OTA", "No firmware update available");
+    {
+      RenderLock lock(*this);
+      state = NO_UPDATE;
+    }
+    return;
+  }
+
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
