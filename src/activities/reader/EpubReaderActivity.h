@@ -9,6 +9,8 @@
 #include "EpubReaderMenuActivity.h"
 #include "activities/Activity.h"
 
+class Page;
+
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
@@ -38,6 +40,31 @@ class EpubReaderActivity final : public Activity {
   bool pendingForceFullRefresh = false;
   bool waitingForConfirmSecondClick = false;
   unsigned long firstConfirmClickMs = 0UL;
+  int sessionStartSpineIndex = 0;
+  int sessionStartPage = 0;
+  bool sessionProgressTouched = false;
+
+  struct ReaderSettingsSnapshot {
+    uint8_t darkMode = 0;
+    uint8_t fadingFix = 0;
+    uint8_t refreshFrequency = 0;
+    uint8_t fontFamily = 0;
+    uint8_t fontSize = 0;
+    uint8_t lineSpacing = 0;
+    uint8_t screenMargin = 0;
+    uint8_t paragraphAlignment = 0;
+    uint8_t embeddedStyle = 0;
+    uint8_t hyphenationEnabled = 0;
+    uint8_t bionicReading = 0;
+    uint8_t orientation = 0;
+    uint8_t extraParagraphSpacing = 0;
+    uint8_t forceParagraphIndents = 0;
+    uint8_t textAntiAliasing = 0;
+    uint8_t textDarkness = 0;
+    uint8_t readerRefreshMode = 0;
+    uint8_t imageRendering = 0;
+    std::string sdFontFamilyName;
+  };
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
@@ -57,21 +84,31 @@ class EpubReaderActivity final : public Activity {
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  ReaderSettingsSnapshot captureReaderSettingsSnapshot() const;
+  void applyReaderSettingsChanges(const ReaderSettingsSnapshot& before);
   void applyOrientation(uint8_t orientation);
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
+  void saveCurrentPageBookmark();
+  std::string moveCompletedBookIfEnabled();
+  void exitReaderAfterOptionalCompletedMove();
+  void markCurrentBookAsFinished();
   void pageTurn(bool isForwardTurn);
   void requestCurrentPageFullRefresh();
+  std::shared_ptr<Page> loadCurrentPageForOverlay(int& outMarginLeft, int& outMarginTop);
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
 
   // KOReader sync — standalone activity launch and result application
-  enum class SyncLaunchMode { COMPARE, PULL_REMOTE, PUSH_LOCAL };
+  enum class SyncLaunchMode { COMPARE, PULL_REMOTE, PUSH_LOCAL, AUTO_PUSH };
   bool pendingParagraphLookup = false;
   uint16_t pendingParagraphIndex = 0;
+  bool pendingListItemLookup = false;
+  uint16_t pendingListItemIndex = 0;
   void launchKOReaderSync(SyncLaunchMode mode);
   void applyPendingSyncSession();
+  bool tryAutoPushOnClose();
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,

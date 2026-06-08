@@ -27,7 +27,7 @@ class ReadingStatsDetailActivity final : public Activity {
   int scrollOffset = 0;
   int maxScrollOffset = 0;
 
-  void openAdjustment();
+  void openStatsActions();
   void guardChildReturn();
   bool storeBaseScreenBuffer();
   bool restoreBaseScreenBuffer();
@@ -45,4 +45,5 @@ class ReadingStatsDetailActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  uint8_t getUiTransitionRefreshWeight() const override { return UI_TRANSITION_REFRESH_WEIGHT_DENSE; }
 };

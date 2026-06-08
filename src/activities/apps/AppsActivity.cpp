@@ -7,12 +7,14 @@
 
 #include "AchievementsActivity.h"
 #include "BookmarksAppActivity.h"
+#include "DictionaryActivity.h"
 #include "FavoritesAppActivity.h"
 #include "FlashcardsAppActivity.h"
 #include "IfFoundActivity.h"
 #include "ReadingHeatmapActivity.h"
 #include "ReadingProfileActivity.h"
 #include "ReadingStatsActivity.h"
+#include "ScreenCleanActivity.h"
 #include "SleepAppActivity.h"
 #include "SyncDayActivity.h"
 #include "components/UITheme.h"
@@ -152,7 +154,6 @@ void AppsActivity::openSelectedApp() {
     case ShortcutId::BrowseFiles:
       activityManager.goToFileBrowser();
       return;
-    case ShortcutId::Stats:
     case ShortcutId::ReadingStats:
       activity = std::make_unique<ReadingStatsActivity>(renderer, mappedInput);
       break;
@@ -186,9 +187,15 @@ void AppsActivity::openSelectedApp() {
     case ShortcutId::Flashcards:
       activity = std::make_unique<FlashcardsAppActivity>(renderer, mappedInput);
       break;
+    case ShortcutId::Dictionary:
+      activity = std::make_unique<DictionaryActivity>(renderer, mappedInput);
+      break;
     case ShortcutId::FileTransfer:
       activityManager.goToFileTransfer();
       return;
+    case ShortcutId::ScreenClean:
+      activity = std::make_unique<ScreenCleanActivity>(renderer, mappedInput);
+      break;
     case ShortcutId::Sleep:
       activity = std::make_unique<SleepAppActivity>(renderer, mappedInput);
       break;

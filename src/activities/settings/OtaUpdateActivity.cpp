@@ -7,6 +7,8 @@
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "ReadingStatsStore.h"
+#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -52,6 +54,15 @@ void OtaUpdateActivity::checkForUpdateNow() {
   requestUpdateAndWait();
 
   const auto res = updater.checkForUpdate();
+  if (res == OtaUpdater::NO_UPDATE) {
+    LOG_DBG("OTA", "No firmware update available");
+    {
+      RenderLock lock(*this);
+      state = NO_UPDATE;
+    }
+    return;
+  }
+
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
@@ -89,6 +100,8 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
 void OtaUpdateActivity::onEnter() {
   Activity::onEnter();
 
+  READING_STATS.releaseMemoryForNetwork();
+
   // Turn on WiFi immediately
   LOG_DBG("OTA", "Turning on WiFi...");
   WiFi.mode(WIFI_STA);
@@ -102,11 +115,13 @@ void OtaUpdateActivity::onEnter() {
 void OtaUpdateActivity::onExit() {
   Activity::onExit();
 
-  // Turn off wifi
-  WiFi.disconnect(false);  // false = don't erase credentials, send disconnect frame
-  delay(100);              // Allow disconnect frame to be sent
-  WiFi.mode(WIFI_OFF);
-  delay(100);  // Allow WiFi hardware to fully power down
+  // Success path reboots via SHUTTING_DOWN, so the new firmware boots
+  // normally. Back-out/failure paths land here with WiFi still active.
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(false);
+    delay(30);
+    silentRestart();
+  }
 }
 
 void OtaUpdateActivity::render(RenderLock&&) {
@@ -191,6 +206,7 @@ void OtaUpdateActivity::loop() {
       {
         RenderLock lock(*this);
         state = UPDATE_IN_PROGRESS;
+        lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
       }
       requestUpdateAndWait();
       const auto res = updater.installUpdate(

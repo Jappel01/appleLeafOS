@@ -42,6 +42,7 @@ enum class SettingAction {
   Bookmarks,
   Favorites,
   Flashcards,
+  ScreenClean,
   SleepApp,
   IfFound,
   DownloadFonts,
@@ -196,6 +197,8 @@ class SettingsActivity final : public Activity {
   int firstSelectableSettingIndex() const;
   int stepSettingSelection(int direction) const;
   void renderAppSettingsList(const Rect& rect) const;
+  bool prewarmSettingsRenderText(const char* settingsTitle, const char* selectedCategoryLabel,
+                                 const char* firmwareVersion, const char* confirmLabel) const;
   void showTransientPopup(const char* message, int progress = -1, unsigned long delayMs = 0);
   void toggleCurrentSetting();
   void buildSettingsLists();
@@ -207,4 +210,5 @@ class SettingsActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  uint8_t getUiTransitionRefreshWeight() const override { return UI_TRANSITION_REFRESH_WEIGHT_DENSE; }
 };

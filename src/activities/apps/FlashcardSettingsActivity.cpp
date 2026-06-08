@@ -14,6 +14,8 @@ std::string getStudyModeValue() {
       return tr(STR_DUE);
     case CrossPointSettings::FLASHCARD_STUDY_INFINITE:
       return tr(STR_RANDOM_PRACTICE);
+    case CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL:
+      return tr(STR_SEQUENTIAL);
     case CrossPointSettings::FLASHCARD_STUDY_SCHEDULED:
     default:
       return tr(STR_SCHEDULED);

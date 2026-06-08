@@ -108,6 +108,27 @@ bool endsWith(const std::string& value, const char* suffix) {
   return value.size() >= suffixLen && value.compare(value.size() - suffixLen, suffixLen, suffix) == 0;
 }
 
+bool startsWithIgnoreCase(const char* value, const char* prefix) {
+  if (!value) return false;
+  const size_t prefixLen = strlen(prefix);
+  if (strlen(value) < prefixLen) return false;
+  for (size_t i = 0; i < prefixLen; ++i) {
+    if (std::tolower(static_cast<unsigned char>(value[i])) !=
+        std::tolower(static_cast<unsigned char>(prefix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool startsWithIgnoreCase(const std::string& value, const char* prefix) {
+  return startsWithIgnoreCase(value.c_str(), prefix);
+}
+
+bool urlUsesTls(const char* url) { return startsWithIgnoreCase(url, "https://"); }
+
+bool urlUsesTls(const std::string& url) { return urlUsesTls(url.c_str()); }
+
 std::string trimTrailingSlashes(std::string url) {
   while (!url.empty() && url.back() == '/') {
     url.pop_back();
@@ -116,6 +137,17 @@ std::string trimTrailingSlashes(std::string url) {
 }
 
 std::string configuredBaseUrl() { return trimTrailingSlashes(KOREADER_STORE.getBaseUrl()); }
+
+bool configuredEndpointUsesTls() {
+  const std::string& customUrl = KOREADER_STORE.getServerUrl();
+  if (customUrl.empty()) {
+    return true;
+  }
+  if (customUrl.find("://") == std::string::npos) {
+    return false;
+  }
+  return urlUsesTls(customUrl);
+}
 
 std::string rootBaseUrl() {
   std::string root = configuredBaseUrl();
@@ -236,27 +268,13 @@ esp_err_t httpEventHandler(esp_http_client_event_t* evt) {
   return ESP_OK;
 }
 
-std::string base64Encode(const std::string& input) {
-  static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve(((input.size() + 2) / 3) * 4);
-  int val = 0, valb = -6;
-  for (unsigned char c : input) {
-    val = (val << 8) + c;
-    valb += 8;
-    while (valb >= 0) {
-      out.push_back(table[(val >> valb) & 0x3F]);
-      valb -= 6;
-    }
-  }
-  if (valb > -6) out.push_back(table[((val << 8) >> (valb + 8)) & 0x3F]);
-  while (out.size() % 4) out.push_back('=');
-  return out;
-}
-
 // Refuse to attempt a TLS handshake when fragmentation makes it doomed.
 // Total free heap misleads because fragmentation can leave no block big enough.
 bool checkHeapForTls() {
+  if (!configuredEndpointUsesTls()) {
+    return true;
+  }
+
   const bool hasReusableSession = g_keepSessionOpen && g_sessionClient != nullptr;
   const bool isUpload =
       (KOReaderSyncClient::lastOperation && strcmp(KOReaderSyncClient::lastOperation, "update progress") == 0);
@@ -282,16 +300,20 @@ void refreshHeapSnapshot() {
 }
 
 void logTlsAttemptPlan(const char* operation, int attempt) {
+  const bool usesTls = configuredEndpointUsesTls();
   const bool isUpload = (operation && strcmp(operation, "update progress") == 0);
   const bool hasReusableSession = g_keepSessionOpen && g_sessionClient != nullptr;
-  const unsigned requiredContig = (isUpload && hasReusableSession)
-                                      ? KOReaderSyncClient::MIN_CONTIG_HEAP_FOR_TLS_UPLOAD
-                                      : KOReaderSyncClient::MIN_CONTIG_HEAP_FOR_TLS;
+  unsigned requiredContig = 0;
+  if (usesTls) {
+    requiredContig = (isUpload && hasReusableSession) ? KOReaderSyncClient::MIN_CONTIG_HEAP_FOR_TLS_UPLOAD
+                                                      : KOReaderSyncClient::MIN_CONTIG_HEAP_FOR_TLS;
+  }
+  const char* tlsMode = !usesTls ? "plain" : (isUpload && hasReusableSession) ? "reuse" : "handshake";
 
   LOG_DBG("KOSync", "%s attempt %d: keep_session=%s reusable=%s tls_mode=%s heap=%u contig=%u need=%u",
           operation ? operation : "request", attempt, g_keepSessionOpen ? "yes" : "no",
-          hasReusableSession ? "yes" : "no", (isUpload && hasReusableSession) ? "reuse" : "handshake",
-          KOReaderSyncClient::lastHeapAtFailure, KOReaderSyncClient::lastContigHeapAtFailure, requiredContig);
+          hasReusableSession ? "yes" : "no", tlsMode, KOReaderSyncClient::lastHeapAtFailure,
+          KOReaderSyncClient::lastContigHeapAtFailure, requiredContig);
 }
 
 void resetSessionClientForRetry() {
@@ -305,11 +327,6 @@ void applyAuthHeaders(esp_http_client_handle_t client) {
   esp_http_client_set_header(client, "Accept", "application/vnd.koreader.v1+json");
   esp_http_client_set_header(client, "x-auth-user", KOREADER_STORE.getUsername().c_str());
   esp_http_client_set_header(client, "x-auth-key", KOREADER_STORE.getMd5Password().c_str());
-
-  // Manual Basic Auth — esp_http_client lacks setAuthorization().
-  // Needed for Calibre-Web-Automated which requires RFC 7617 Basic Auth.
-  std::string credentials = KOREADER_STORE.getUsername() + ":" + KOREADER_STORE.getPassword();
-  esp_http_client_set_header(client, "Authorization", ("Basic " + base64Encode(credentials)).c_str());
 }
 
 esp_http_client_handle_t createClient(const char* url, ResponseBuffer* buf,
@@ -331,9 +348,14 @@ esp_http_client_handle_t createClient(const char* url, ResponseBuffer* buf,
   config.timeout_ms = 5000;
   config.buffer_size = HTTP_BUF_SIZE;
   config.buffer_size_tx = 512;
-  config.crt_bundle_attach = esp_crt_bundle_attach;
+  if (urlUsesTls(url)) {
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+  }
   config.keep_alive_enable = g_keepSessionOpen;
   config.max_redirection_count = 3;
+  config.username = KOREADER_STORE.getUsername().c_str();
+  config.password = KOREADER_STORE.getPassword().c_str();
+  config.auth_type = HTTP_AUTH_TYPE_BASIC;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) return nullptr;

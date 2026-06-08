@@ -12,14 +12,20 @@ class EpubReaderMenuActivity final : public Activity {
  public:
   // Menu actions available from the reader menu.
   enum class MenuAction {
+    READER_SETTINGS,
     SELECT_CHAPTER,
     FOOTNOTES,
-    BOOKMARKS,
+    LOOK_UP_WORD,
+    LOOKUP_HISTORY,
+    DICTIONARY,
+    VIEW_BOOKMARKS,
+    SAVE_BOOKMARK,
     GO_TO_PERCENT,
     AUTO_PAGE_TURN,
     ROTATE_SCREEN,
     SCREENSHOT,
     DISPLAY_QR,
+    MARK_AS_FINISHED,
     GO_HOME,
     SYNC,
     DELETE_CACHE
@@ -27,8 +33,7 @@ class EpubReaderMenuActivity final : public Activity {
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,
-                                  const uint8_t currentOrientation, const bool hasFootnotes,
-                                  const bool hasBookmarks);
+                                  const uint8_t currentOrientation, const bool hasFootnotes);
 
   void onEnter() override;
   void onExit() override;
@@ -42,7 +47,7 @@ class EpubReaderMenuActivity final : public Activity {
     StrId labelId;
   };
 
-  static std::vector<MenuItem> buildMenuItems(bool hasFootnotes, bool hasBookmarks);
+  static std::vector<MenuItem> buildMenuItems(bool hasFootnotes);
 
   // Fixed menu layout
   const std::vector<MenuItem> menuItems;

@@ -10,12 +10,14 @@
 #include "ReadingStatsDetailActivity.h"
 #include "ReadingStatsExtendedActivity.h"
 #include "ReadingStatsStore.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/HeaderDateUtils.h"
 #include "util/ReadingStatsAnalytics.h"
 
 namespace {
+constexpr unsigned long BOOK_LONG_PRESS_MS = 1000;
 constexpr int SUMMARY_CARD_HEIGHT = 76;
 constexpr int SUMMARY_GAP = 10;
 constexpr int DETAILS_BUTTON_HEIGHT = 58;
@@ -105,10 +107,16 @@ void drawBookRow(GfxRenderer& renderer, const Rect& rect, const ReadingBookStats
 
 void ReadingStatsActivity::onEnter() {
   Activity::onEnter();
+  renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
   selectedIndex = READING_STATS.getBooks().empty() ? 0 : 1;
   waitForConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
   waitForBackRelease = false;
   requestUpdate();
+}
+
+void ReadingStatsActivity::onExit() {
+  renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
+  Activity::onExit();
 }
 
 void ReadingStatsActivity::loop() {
@@ -137,6 +145,11 @@ void ReadingStatsActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (selectedIndex > 0 && mappedInput.getHeldTime() >= BOOK_LONG_PRESS_MS) {
+      confirmRemoveSelectedBook();
+      return;
+    }
+
     openSelectedEntry();
     return;
   }
@@ -200,6 +213,35 @@ void ReadingStatsActivity::openSelectedEntry() {
                            guardBackReturn();
                            requestUpdate();
                          });
+}
+
+void ReadingStatsActivity::confirmRemoveSelectedBook() {
+  const auto& books = READING_STATS.getBooks();
+  const int bookIndex = selectedIndex - 1;
+  if (bookIndex < 0 || bookIndex >= static_cast<int>(books.size())) {
+    return;
+  }
+
+  const ReadingBookStats selectedBook = books[bookIndex];
+  const int currentSelection = selectedIndex;
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_STATS_ENTRY),
+                                             getBookTitle(selectedBook)),
+      [this, selectedBook, currentSelection](const ActivityResult& result) {
+        if (!result.isCancelled && READING_STATS.removeBook(selectedBook.path)) {
+          const int bookCount = static_cast<int>(READING_STATS.getBooks().size());
+          if (bookCount == 0) {
+            selectedIndex = 0;
+          } else if (currentSelection > bookCount) {
+            selectedIndex = bookCount;
+          } else {
+            selectedIndex = currentSelection;
+          }
+        }
+
+        guardBackReturn();
+        requestUpdate(true);
+      });
 }
 
 void ReadingStatsActivity::guardBackReturn() { waitForBackRelease = true; }

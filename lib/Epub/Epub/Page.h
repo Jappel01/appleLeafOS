@@ -10,9 +10,12 @@
 #include "blocks/ImageBlock.h"
 #include "blocks/TextBlock.h"
 
+class FontCacheManager;
+
 enum PageElementTag : uint8_t {
   TAG_PageLine = 1,
-  TAG_PageImage = 2,  // New tag
+  TAG_PageImage = 2,
+  TAG_PageHorizontalRule = 3,
 };
 
 // represents something that has been added to a page
@@ -55,6 +58,20 @@ class PageImage final : public PageElement {
   const ImageBlock& getImageBlock() const { return *imageBlock; }
 };
 
+class PageHorizontalRule final : public PageElement {
+  uint16_t width;
+  uint8_t thickness;
+
+ public:
+  PageHorizontalRule(uint16_t width, uint8_t thickness, const int16_t xPos, const int16_t yPos)
+      : PageElement(xPos, yPos), width(width), thickness(thickness) {}
+
+  void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, uint8_t bionicReadingMode = 0) override;
+  bool serialize(FsFile& file) override;
+  PageElementTag getTag() const override { return TAG_PageHorizontalRule; }
+  static std::unique_ptr<PageHorizontalRule> deserialize(FsFile& file);
+};
+
 class Page {
  public:
   // the list of block index and line numbers on this page
@@ -73,6 +90,7 @@ class Page {
   }
 
   void render(GfxRenderer& renderer, int fontId, int xOffset, int yOffset, uint8_t bionicReadingMode = 0) const;
+  void recordFontUsage(FontCacheManager& fontCacheManager, int fontId, uint8_t bionicReadingMode = 0) const;
   void renderImages(GfxRenderer& renderer, int xOffset, int yOffset) const;
   bool serialize(FsFile& file) const;
   static std::unique_ptr<Page> deserialize(FsFile& file);

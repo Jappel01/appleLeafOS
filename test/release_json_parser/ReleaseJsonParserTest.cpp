@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "lib/JsonParser/FirmwareManifestJsonParser.h"
 #include "lib/JsonParser/ReleaseJsonParser.h"
 
 static int testsPassed = 0;
@@ -844,6 +845,51 @@ void testChunkedRealisticEveryBoundary() {
   PASS();
 }
 
+void testFirmwareManifestParser() {
+  printf("testFirmwareManifestParser...\n");
+
+  const char* json = R"({
+      "name": "CPR-vCodex",
+      "version": "1.3.0.9-cpr-vcodex",
+      "firmwareUrl": "firmware/firmware.bin",
+      "downloadUrl": "https://github.com/franssjz/cpr-vcodex/releases/download/1.3.0.9-cpr-vcodex/1.3.0.9-cpr-vcodex.bin",
+      "size": 6192336,
+      "source": {
+        "type": "github-release",
+        "tag": "1.3.0.9-cpr-vcodex"
+      },
+      "builds": [
+        {"chipFamily": "ESP32-C3", "parts": [{"path": "firmware.bin", "offset": 65536}]}
+      ]
+    })";
+
+  FirmwareManifestJsonParser p;
+  p.feed(json, strlen(json));
+
+  ASSERT_TRUE(p.foundManifest());
+  ASSERT_STREQ(p.getVersion(), "1.3.0.9-cpr-vcodex");
+  ASSERT_STREQ(p.getDownloadUrl(),
+               "https://github.com/franssjz/cpr-vcodex/releases/download/1.3.0.9-cpr-vcodex/1.3.0.9-cpr-vcodex.bin");
+  ASSERT_EQ(p.getFirmwareSize(), 6192336u);
+
+  printf("  passed\n");
+  PASS();
+}
+
+void testFirmwareManifestMissingDownloadUrl() {
+  printf("testFirmwareManifestMissingDownloadUrl...\n");
+
+  const char* json = R"({"version":"1.3.0.9-cpr-vcodex","size":6192336})";
+
+  FirmwareManifestJsonParser p;
+  p.feed(json, strlen(json));
+
+  ASSERT_TRUE(!p.foundManifest());
+
+  printf("  passed\n");
+  PASS();
+}
+
 // ============================================================================
 
 int main() {
@@ -882,6 +928,8 @@ int main() {
   testSizeZero();
   testMinimalValidJson();
   testChunkedRealisticEveryBoundary();
+  testFirmwareManifestParser();
+  testFirmwareManifestMissingDownloadUrl();
 
   printf("\n=== Results: %d passed, %d failed ===\n", testsPassed, testsFailed);
   return testsFailed > 0 ? 1 : 0;

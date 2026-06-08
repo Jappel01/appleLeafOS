@@ -10,7 +10,7 @@
 
 enum class ShortcutId {
   BrowseFiles = 0,
-  Stats,
+  Stats,  // Legacy: replaced by ReadingStats, kept only so old code paths remain harmless.
   SyncDay,
   Settings,
   ReadingStats,
@@ -22,7 +22,9 @@ enum class ShortcutId {
   Bookmarks,
   Favorites,
   Flashcards,
+  Dictionary,
   FileTransfer,
+  ScreenClean,
   Sleep,
   OpdsBrowser,
 };
@@ -37,14 +39,11 @@ struct ShortcutDefinition {
   uint8_t CrossPointSettings::* visiblePtr;
 };
 
-inline const std::array<ShortcutDefinition, 16>& getShortcutDefinitions() {
-  static const std::array<ShortcutDefinition, 16> definitions = {
+inline const std::array<ShortcutDefinition, 17>& getShortcutDefinitions() {
+  static const std::array<ShortcutDefinition, 17> definitions = {
       ShortcutDefinition{ShortcutId::BrowseFiles, StrId::STR_BROWSE_FILES, StrId::STR_NONE_OPT, UIIcon::Folder,
                          &CrossPointSettings::browseFilesShortcut, &CrossPointSettings::browseFilesShortcutOrder,
                          &CrossPointSettings::browseFilesShortcutVisible},
-      ShortcutDefinition{ShortcutId::Stats, StrId::STR_STATS_SHORTCUT, StrId::STR_NONE_OPT, UIIcon::Book,
-                         &CrossPointSettings::statsShortcut, &CrossPointSettings::statsShortcutOrder,
-                         &CrossPointSettings::statsShortcutVisible},
       ShortcutDefinition{ShortcutId::SyncDay, StrId::STR_SYNC_DAY, StrId::STR_SYNC_DAY_DESC, UIIcon::Wifi,
                          &CrossPointSettings::syncDayShortcut, &CrossPointSettings::syncDayShortcutOrder,
                          &CrossPointSettings::syncDayShortcutVisible},
@@ -80,9 +79,16 @@ inline const std::array<ShortcutDefinition, 16>& getShortcutDefinitions() {
       ShortcutDefinition{ShortcutId::Flashcards, StrId::STR_FLASHCARDS, StrId::STR_FLASHCARDS_APP_DESC, UIIcon::Text,
                          &CrossPointSettings::flashcardsShortcut, &CrossPointSettings::flashcardsShortcutOrder,
                          &CrossPointSettings::flashcardsShortcutVisible},
+      ShortcutDefinition{ShortcutId::Dictionary, StrId::STR_DICTIONARY, StrId::STR_DICTIONARY_APP_DESC, UIIcon::Text,
+                         &CrossPointSettings::dictionaryShortcut, &CrossPointSettings::dictionaryShortcutOrder,
+                         &CrossPointSettings::dictionaryShortcutVisible},
       ShortcutDefinition{ShortcutId::FileTransfer, StrId::STR_FILE_TRANSFER, StrId::STR_FILE_TRANSFER_APP_DESC,
                          UIIcon::Transfer, &CrossPointSettings::fileTransferShortcut,
                          &CrossPointSettings::fileTransferShortcutOrder, &CrossPointSettings::fileTransferShortcutVisible},
+      ShortcutDefinition{ShortcutId::ScreenClean, StrId::STR_SCREEN_CLEAN, StrId::STR_SCREEN_CLEAN_APP_DESC,
+                         UIIcon::Image, &CrossPointSettings::screenCleanShortcut,
+                         &CrossPointSettings::screenCleanShortcutOrder,
+                         &CrossPointSettings::screenCleanShortcutVisible},
       ShortcutDefinition{ShortcutId::Sleep, StrId::STR_SLEEP, StrId::STR_SLEEP_APP_DESC, UIIcon::Folder,
                          &CrossPointSettings::sleepShortcut, &CrossPointSettings::sleepShortcutOrder,
                          &CrossPointSettings::sleepShortcutVisible},

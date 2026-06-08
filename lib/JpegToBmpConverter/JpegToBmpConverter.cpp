@@ -4,12 +4,119 @@
 #include <HalStorage.h>
 #include <JPEGDEC.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <cstdio>
 #include <cstring>
-#include <new>
 
 #include "BitmapHelpers.h"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exif thumbnail helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+inline uint16_t exifU16(const uint8_t* p, bool le) {
+  return le ? (static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8))
+            : ((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+}
+inline uint32_t exifU32(const uint8_t* p, bool le) {
+  return le ? (static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+               (static_cast<uint32_t>(p[3]) << 24))
+            : ((static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+               (static_cast<uint32_t>(p[2]) << 8) | p[3]);
+}
+
+struct ExifThumbInfo {
+  uint32_t offset = 0;  // byte offset from start of JPEG file to thumbnail data
+  uint32_t length = 0;
+  bool found = false;
+};
+
+// Scan a JPEG file (from its current position) for an Exif APP1 block and
+// return the offset + length of the embedded JPEG thumbnail, if present.
+// Uses HalFile::seek() + position() so the file position is undefined on return.
+ExifThumbInfo findExifThumbnail(FsFile& file) {
+  ExifThumbInfo result;
+  uint8_t buf[12];
+
+  // Rewind and verify SOI
+  if (!file.seek(0)) return result;
+  if (file.read(buf, 2) != 2 || buf[0] != 0xFF || buf[1] != 0xD8) return result;
+
+  // Walk JPEG markers looking for APP1 (0xE1)
+  while (true) {
+    if (file.read(buf, 2) != 2 || buf[0] != 0xFF) return result;
+    const uint8_t marker = buf[1];
+    if (file.read(buf, 2) != 2) return result;
+    const uint16_t segLen = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
+    if (segLen < 2) return result;
+    const size_t segEnd = file.position() + (segLen - 2);
+
+    if (marker == 0xE1) {  // APP1
+      // Check for "Exif\0\0" signature
+      if (segLen < 8 || file.read(buf, 6) != 6 || buf[0] != 'E' || buf[1] != 'x' || buf[2] != 'i' || buf[3] != 'f' ||
+          buf[4] != 0 || buf[5] != 0) {
+        if (!file.seek(segEnd)) return result;
+        continue;
+      }
+
+      // TIFF data begins here
+      const size_t tiffBase = file.position();
+
+      // Read TIFF header: byte-order (2), magic 42 (2), IFD0 offset (4)
+      if (file.read(buf, 8) != 8) return result;
+      const bool le = (buf[0] == 'I');
+      if (!le && buf[0] != 'M') return result;
+      if (exifU16(buf + 2, le) != 42) return result;
+      const uint32_t ifd0Off = exifU32(buf + 4, le);
+
+      // Seek to IFD0, read entry count, skip entries, read IFD1 pointer
+      if (!file.seek(tiffBase + ifd0Off)) return result;
+      if (file.read(buf, 2) != 2) return result;
+      const uint16_t ifd0Count = exifU16(buf, le);
+      if (!file.seek(file.position() + ifd0Count * 12)) return result;
+      if (file.read(buf, 4) != 4) return result;
+      const uint32_t ifd1Off = exifU32(buf, le);
+      if (ifd1Off == 0) return result;
+
+      // Seek to IFD1, read its entries
+      if (!file.seek(tiffBase + ifd1Off)) return result;
+      if (file.read(buf, 2) != 2) return result;
+      const uint16_t ifd1Count = exifU16(buf, le);
+
+      uint32_t thumbOff = 0, thumbLen = 0;
+      bool isJpeg = false;
+
+      for (uint16_t i = 0; i < ifd1Count; ++i) {
+        if (file.read(buf, 12) != 12) return result;
+        const uint16_t tag = exifU16(buf, le);
+        const uint32_t val = exifU32(buf + 8, le);
+        if (tag == 0x0103)
+          isJpeg = (val == 6);
+        else if (tag == 0x0201)
+          thumbOff = val;
+        else if (tag == 0x0202)
+          thumbLen = val;
+      }
+
+      if (!isJpeg || thumbOff == 0 || thumbLen == 0) return result;
+
+      result.offset = static_cast<uint32_t>(tiffBase) + thumbOff;
+      result.length = thumbLen;
+      result.found = true;
+      return result;
+
+    } else if (marker == 0xD9 || marker == 0xDA) {
+      return result;  // EOI or SOS — nothing useful after this
+    } else {
+      if (!file.seek(segEnd)) return result;
+    }
+  }
+}
+
+}  // namespace
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS - Toggle these to test different configurations
@@ -211,26 +318,26 @@ struct BmpConvertCtx {
 
   // Accumulates one MCU row (up to MAX_MCU_HEIGHT source rows × srcWidth pixels)
   // Filled column-by-column as JPEGDEC callbacks arrive for the same MCU row
-  uint8_t* mcuBuf;
+  std::unique_ptr<uint8_t[]> mcuBuf;
 
   // Y-axis area averaging accumulators (needsScaling only)
   int currentOutY;
   uint32_t nextOutY_srcStart;  // 16.16 fixed-point boundary for the next output row
-  uint32_t* rowAccum;
-  uint32_t* rowCount;
+  std::unique_ptr<uint32_t[]> rowAccum;
+  std::unique_ptr<uint32_t[]> rowCount;
 
-  uint8_t* bmpRow;
+  std::unique_ptr<uint8_t[]> bmpRow;
 
-  AtkinsonDitherer* atkinsonDitherer;
-  FloydSteinbergDitherer* fsDitherer;
-  Atkinson1BitDitherer* atkinson1BitDitherer;
+  std::unique_ptr<AtkinsonDitherer> atkinsonDitherer;
+  std::unique_ptr<FloydSteinbergDitherer> fsDitherer;
+  std::unique_ptr<Atkinson1BitDitherer> atkinson1BitDitherer;
 
   bool error;
 };
 
 // Write a fully-assembled output row (grayscale bytes, length outWidth) to BMP
 static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) {
-  memset(ctx->bmpRow, 0, ctx->bytesPerRow);
+  memset(ctx->bmpRow.get(), 0, ctx->bytesPerRow);
 
   if (USE_8BIT_OUTPUT && !ctx->oneBit) {
     for (int x = 0; x < ctx->outWidth; x++) {
@@ -262,12 +369,12 @@ static void writeOutputRow(BmpConvertCtx* ctx, const uint8_t* srcRow, int outY) 
       ctx->fsDitherer->nextRow();
   }
 
-  ctx->bmpOut->write(ctx->bmpRow, ctx->bytesPerRow);
+  ctx->bmpOut->write(ctx->bmpRow.get(), ctx->bytesPerRow);
 }
 
 // Flush one scaled output row from Y-axis accumulators and advance currentOutY
 static void flushScaledRow(BmpConvertCtx* ctx) {
-  memset(ctx->bmpRow, 0, ctx->bytesPerRow);
+  memset(ctx->bmpRow.get(), 0, ctx->bytesPerRow);
 
   if (USE_8BIT_OUTPUT && !ctx->oneBit) {
     for (int x = 0; x < ctx->outWidth; x++) {
@@ -301,7 +408,7 @@ static void flushScaledRow(BmpConvertCtx* ctx) {
       ctx->fsDitherer->nextRow();
   }
 
-  ctx->bmpOut->write(ctx->bmpRow, ctx->bytesPerRow);
+  ctx->bmpOut->write(ctx->bmpRow.get(), ctx->bytesPerRow);
   ctx->currentOutY++;
 }
 
@@ -320,11 +427,19 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   const int blockX = pDraw->x;
   const int blockY = pDraw->y;
 
+  // Guard against unexpected callback geometry so we never index past row buffers.
+  if (blockX < 0 || blockY < 0 || blockX >= ctx->srcWidth || blockY >= ctx->srcHeight) {
+    LOG_ERR("JPG", "Unexpected JPEG block origin (%d,%d) for decode grid %dx%d", blockX, blockY, ctx->srcWidth,
+            ctx->srcHeight);
+    ctx->error = true;
+    return 0;
+  }
+
   // Copy block pixels into MCU row buffer
   for (int r = 0; r < blockH && r < MAX_MCU_HEIGHT; r++) {
     const int copyW = (blockX + validW <= ctx->srcWidth) ? validW : (ctx->srcWidth - blockX);
     if (copyW <= 0) continue;
-    memcpy(ctx->mcuBuf + r * ctx->srcWidth + blockX, pixels + r * stride, copyW);
+    memcpy(ctx->mcuBuf.get() + r * ctx->srcWidth + blockX, pixels + r * stride, copyW);
   }
 
   // Wait for the last MCU column before processing any rows
@@ -334,7 +449,7 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
   const int endRow = blockY + blockH;
 
   for (int y = blockY; y < endRow && y < ctx->srcHeight; y++) {
-    const uint8_t* srcRow = ctx->mcuBuf + (y - blockY) * ctx->srcWidth;
+    const uint8_t* srcRow = ctx->mcuBuf.get() + (y - blockY) * ctx->srcWidth;
 
     if (!ctx->needsScaling) {
       // 1:1 — outWidth == srcWidth, write directly
@@ -364,8 +479,8 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
         flushScaledRow(ctx);
         ctx->nextOutY_srcStart = static_cast<uint32_t>(ctx->currentOutY + 1) * ctx->scaleY_fp;
         if (srcY_fp >= ctx->nextOutY_srcStart) continue;
-        memset(ctx->rowAccum, 0, ctx->outWidth * sizeof(uint32_t));
-        memset(ctx->rowCount, 0, ctx->outWidth * sizeof(uint32_t));
+        memset(ctx->rowAccum.get(), 0, ctx->outWidth * sizeof(uint32_t));
+        memset(ctx->rowCount.get(), 0, ctx->outWidth * sizeof(uint32_t));
       }
     }
   }
@@ -377,33 +492,51 @@ int bmpDrawCallback(JPEGDRAW* pDraw) {
 
 // Internal implementation with configurable target size and bit depth
 bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bmpOut, int targetWidth, int targetHeight,
-                                                     bool oneBit, bool crop) {
+                                                     bool oneBit, bool crop, bool* permanentFailure) {
+  // Helper: mark a failure as permanent (bad JPEG data) or transient (OOM).
+  // Permanent = the same JPEG bytes will always fail; writing a sentinel stops endless retries.
+  // Transient = might succeed later if memory frees up; no sentinel should be written.
+  auto setPermanent = [&](bool permanent) {
+    if (permanentFailure) *permanentFailure = permanent;
+  };
   LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
   if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
     LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+    setPermanent(false);  // transient: might succeed once memory is freed
     return false;
   }
 
   s_jpegFile = &jpegFile;
 
-  JPEGDEC* jpeg = new (std::nothrow) JPEGDEC();
+  auto jpeg = makeUniqueNoThrow<JPEGDEC>();
   if (!jpeg) {
-    LOG_ERR("JPG", "Failed to allocate JPEG decoder");
+    LOG_ERR("JPG", "OOM: JPEG decoder");
+    setPermanent(false);  // transient: OOM
     return false;
   }
 
   int rc = jpeg->open("", bmpJpegOpen, bmpJpegClose, bmpJpegRead, bmpJpegSeek, bmpDrawCallback);
   if (rc != 1) {
     LOG_ERR("JPG", "JPEG open failed (err=%d)", jpeg->getLastError());
-    delete jpeg;
+    setPermanent(true);  // permanent: this JPEG data failed to parse/open
     return false;
   }
 
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+
   const int srcWidth = jpeg->getWidth();
   const int srcHeight = jpeg->getHeight();
+  const bool progressiveDecode = (jpeg->getJPEGType() == JPEG_MODE_PROGRESSIVE);
+  // JPEGDEC forces progressive streams to JPEG_SCALE_EIGHTH in DecodeJPEG,
+  // so callback coordinates and MCU buffering must use the reduced decode grid.
+  const int decodedSrcWidth = progressiveDecode ? ((srcWidth + 7) >> 3) : srcWidth;
+  const int decodedSrcHeight = progressiveDecode ? ((srcHeight + 7) >> 3) : srcHeight;
 
   LOG_DBG("JPG", "JPEG dimensions: %dx%d", srcWidth, srcHeight);
+  if (progressiveDecode) {
+    LOG_DBG("JPG", "Progressive JPEG decode uses 1/8 source: %dx%d", decodedSrcWidth, decodedSrcHeight);
+  }
 
   constexpr int MAX_IMAGE_WIDTH = 2048;
   constexpr int MAX_IMAGE_HEIGHT = 3072;
@@ -411,14 +544,22 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   if (srcWidth <= 0 || srcHeight <= 0 || srcWidth > MAX_IMAGE_WIDTH || srcHeight > MAX_IMAGE_HEIGHT) {
     LOG_DBG("JPG", "Image too large or invalid (%dx%d), max supported: %dx%d", srcWidth, srcHeight, MAX_IMAGE_WIDTH,
             MAX_IMAGE_HEIGHT);
-    jpeg->close();
-    delete jpeg;
+    setPermanent(true);  // permanent: the image dimensions won't change
     return false;
   }
 
   // Calculate output dimensions (pre-scale to fit display exactly)
   int outWidth = srcWidth;
   int outHeight = srcHeight;
+  if (targetWidth <= 0 || targetHeight <= 0) {
+    // Without an explicit target, keep decoder-native dimensions.
+    outWidth = decodedSrcWidth;
+    outHeight = decodedSrcHeight;
+  }
+
+  const int scaleSrcWidth = decodedSrcWidth;
+  const int scaleSrcHeight = decodedSrcHeight;
+
   uint32_t scaleX_fp = 65536;  // 1.0 in 16.16 fixed point
   uint32_t scaleY_fp = 65536;
   bool needsScaling = false;
@@ -438,12 +579,14 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     if (outWidth < 1) outWidth = 1;
     if (outHeight < 1) outHeight = 1;
 
-    scaleX_fp = (static_cast<uint32_t>(srcWidth) << 16) / outWidth;
-    scaleY_fp = (static_cast<uint32_t>(srcHeight) << 16) / outHeight;
-    needsScaling = true;
+    LOG_DBG("JPG", "Scaling source %dx%d (decode grid %dx%d) -> %dx%d (target %dx%d)", srcWidth, srcHeight,
+            scaleSrcWidth, scaleSrcHeight, outWidth, outHeight, targetWidth, targetHeight);
+  }
 
-    LOG_DBG("JPG", "Scaling %dx%d -> %dx%d (target %dx%d)", srcWidth, srcHeight, outWidth, outHeight, targetWidth,
-            targetHeight);
+  if (scaleSrcWidth != outWidth || scaleSrcHeight != outHeight) {
+    scaleX_fp = (static_cast<uint32_t>(scaleSrcWidth) << 16) / outWidth;
+    scaleY_fp = (static_cast<uint32_t>(scaleSrcHeight) << 16) / outHeight;
+    needsScaling = true;
   }
 
   // Write BMP header with output dimensions
@@ -461,8 +604,8 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
 
   BmpConvertCtx ctx = {};
   ctx.bmpOut = &bmpOut;
-  ctx.srcWidth = srcWidth;
-  ctx.srcHeight = srcHeight;
+  ctx.srcWidth = scaleSrcWidth;
+  ctx.srcHeight = scaleSrcHeight;
   ctx.outWidth = outWidth;
   ctx.outHeight = outHeight;
   ctx.oneBit = oneBit;
@@ -472,54 +615,55 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   ctx.scaleY_fp = scaleY_fp;
   ctx.error = false;
 
-  // RAII guard: frees all heap resources on any return path
-  struct Cleanup {
-    BmpConvertCtx& ctx;
-    JPEGDEC* jpeg;
-    ~Cleanup() {
-      delete[] ctx.rowAccum;
-      delete[] ctx.rowCount;
-      delete ctx.atkinsonDitherer;
-      delete ctx.fsDitherer;
-      delete ctx.atkinson1BitDitherer;
-      free(ctx.mcuBuf);
-      free(ctx.bmpRow);
-      jpeg->close();
-      delete jpeg;
-    }
-  } cleanup{ctx, jpeg};
-
-  // MCU row buffer: MAX_MCU_HEIGHT rows × srcWidth columns of grayscale
-  ctx.mcuBuf = static_cast<uint8_t*>(malloc(MAX_MCU_HEIGHT * srcWidth));
+  // MCU row buffer: MAX_MCU_HEIGHT rows × decoded srcWidth columns of grayscale
+  ctx.mcuBuf = makeUniqueNoThrow<uint8_t[]>(MAX_MCU_HEIGHT * ctx.srcWidth);
   if (!ctx.mcuBuf) {
-    LOG_ERR("JPG", "Failed to allocate MCU buffer (%d bytes)", MAX_MCU_HEIGHT * srcWidth);
+    LOG_ERR("JPG", "OOM: MCU buffer (%d bytes)", MAX_MCU_HEIGHT * ctx.srcWidth);
+    setPermanent(false);  // transient: OOM
     return false;
   }
-  memset(ctx.mcuBuf, 0, MAX_MCU_HEIGHT * srcWidth);
+  memset(ctx.mcuBuf.get(), 0, MAX_MCU_HEIGHT * ctx.srcWidth);
 
-  ctx.bmpRow = static_cast<uint8_t*>(malloc(bytesPerRow));
+  ctx.bmpRow = makeUniqueNoThrow<uint8_t[]>(bytesPerRow);
   if (!ctx.bmpRow) {
-    LOG_ERR("JPG", "Failed to allocate BMP row buffer");
+    LOG_ERR("JPG", "OOM: BMP row buffer");
+    setPermanent(false);  // transient: OOM
     return false;
   }
 
   if (needsScaling) {
-    ctx.rowAccum = new (std::nothrow) uint32_t[outWidth]();
-    ctx.rowCount = new (std::nothrow) uint32_t[outWidth]();
+    ctx.rowAccum = makeUniqueNoThrow<uint32_t[]>(outWidth);
+    ctx.rowCount = makeUniqueNoThrow<uint32_t[]>(outWidth);
     if (!ctx.rowAccum || !ctx.rowCount) {
-      LOG_ERR("JPG", "Failed to allocate scaling buffers");
+      LOG_ERR("JPG", "OOM: scaling buffers");
+      setPermanent(false);  // transient: OOM
       return false;
     }
     ctx.nextOutY_srcStart = scaleY_fp;
   }
 
   if (oneBit) {
-    ctx.atkinson1BitDitherer = new (std::nothrow) Atkinson1BitDitherer(outWidth);
+    ctx.atkinson1BitDitherer = makeUniqueNoThrow<Atkinson1BitDitherer>(outWidth);
+    if (!ctx.atkinson1BitDitherer) {
+      LOG_ERR("JPG", "OOM: Atkinson1BitDitherer");
+      setPermanent(false);
+      return false;
+    }
   } else if (!USE_8BIT_OUTPUT) {
     if (USE_ATKINSON) {
-      ctx.atkinsonDitherer = new (std::nothrow) AtkinsonDitherer(outWidth);
+      ctx.atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(outWidth);
+      if (!ctx.atkinsonDitherer) {
+        LOG_ERR("JPG", "OOM: AtkinsonDitherer");
+        setPermanent(false);
+        return false;
+      }
     } else if (USE_FLOYD_STEINBERG) {
-      ctx.fsDitherer = new (std::nothrow) FloydSteinbergDitherer(outWidth);
+      ctx.fsDitherer = makeUniqueNoThrow<FloydSteinbergDitherer>(outWidth);
+      if (!ctx.fsDitherer) {
+        LOG_ERR("JPG", "OOM: FloydSteinbergDitherer");
+        setPermanent(false);
+        return false;
+      }
     }
   }
 
@@ -530,6 +674,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
 
   if (rc != 1 || ctx.error) {
     LOG_ERR("JPG", "JPEG decode failed (rc=%d, err=%d)", rc, jpeg->getLastError());
+    setPermanent(true);  // permanent: corrupt, unsupported, or truncated JPEG data
     return false;
   }
 
@@ -553,6 +698,64 @@ bool JpegToBmpConverter::jpegFileToBmpStreamWithSize(FsFile& jpegFile, Print& bm
 
 // Convert to 1-bit BMP (black and white only, no grays) for fast home screen rendering
 bool JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(FsFile& jpegFile, Print& bmpOut, int targetMaxWidth,
-                                                         int targetMaxHeight) {
-  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true);
+                                                         int targetMaxHeight, bool* permanentFailure) {
+  return jpegFileToBmpStreamInternal(jpegFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true, permanentFailure);
+}
+
+// Exif thumbnail fallback for progressive / otherwise undecodable JPEGs.
+bool JpegToBmpConverter::jpegExifThumbnailTo1BitBmpStreamWithSize(FsFile& jpegFile, const std::string& tempThumbPath,
+                                                                  Print& bmpOut, int targetMaxWidth,
+                                                                  int targetMaxHeight, bool* permanentFailure) {
+  const ExifThumbInfo thumb = findExifThumbnail(jpegFile);
+  if (!thumb.found) {
+    LOG_DBG("JPG", "No Exif JPEG thumbnail found in JPEG");
+    if (permanentFailure) *permanentFailure = true;  // not going to change next time
+    return false;
+  }
+  LOG_DBG("JPG", "Exif thumbnail: offset=%lu length=%lu", static_cast<unsigned long>(thumb.offset),
+          static_cast<unsigned long>(thumb.length));
+
+  // Seek to the thumbnail and copy its bytes to a temp file
+  if (!jpegFile.seek(thumb.offset)) {
+    if (permanentFailure) *permanentFailure = false;
+    return false;
+  }
+
+  FsFile tmp;
+  if (!Storage.openFileForWrite("JPG", tempThumbPath, tmp)) {
+    if (permanentFailure) *permanentFailure = false;
+    return false;
+  }
+
+  uint8_t copyBuf[256];
+  uint32_t rem = thumb.length;
+  while (rem > 0) {
+    const uint32_t want = rem < sizeof(copyBuf) ? rem : static_cast<uint32_t>(sizeof(copyBuf));
+    const int got = jpegFile.read(copyBuf, static_cast<size_t>(want));
+    if (got <= 0) break;
+    tmp.write(copyBuf, static_cast<size_t>(got));
+    rem -= static_cast<uint32_t>(got);
+  }
+  tmp.close();
+
+  if (rem > 0) {
+    LOG_ERR("JPG", "Exif thumbnail copy truncated (%lu bytes short)", static_cast<unsigned long>(rem));
+    Storage.remove(tempThumbPath.c_str());
+    if (permanentFailure) *permanentFailure = true;
+    return false;
+  }
+
+  // Decode the extracted thumbnail
+  FsFile thumbFile;
+  if (!Storage.openFileForRead("JPG", tempThumbPath, thumbFile)) {
+    Storage.remove(tempThumbPath.c_str());
+    if (permanentFailure) *permanentFailure = false;
+    return false;
+  }
+
+  const bool ok =
+      jpegFileToBmpStreamInternal(thumbFile, bmpOut, targetMaxWidth, targetMaxHeight, true, true, permanentFailure);
+  thumbFile.close();
+  Storage.remove(tempThumbPath.c_str());
+  return ok;
 }

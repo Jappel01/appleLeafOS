@@ -25,6 +25,11 @@ class CrossPointSettings {
     COVER = 3,
     BLANK = 4,
     COVER_CUSTOM = 5,
+    READING_DASHBOARD = 6,
+    COVER_STATS = 7,
+    COVER_STATS_V2 = 8,
+    CUSTOM_STATS = 9,
+    CUSTOM_STATS_V2 = 10,
     SLEEP_SCREEN_MODE_COUNT
   };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
@@ -170,20 +175,9 @@ class CrossPointSettings {
   };
 
   // UI Theme
-  // Value 2 used to be Lyra Carousel; keep it invalid so old settings
-  // migrate back to the default theme.
-  enum UI_THEME { LYRA = 0, LYRA_CUSTOM = 1, UI_THEME_COUNT = 2 };
-  enum DATE_FORMAT {
-    DATE_DD_MM_YYYY = 0,
-    DATE_MM_DD_YYYY = 1,
-    DATE_YYYY_MM_DD = 2,
-    DATE_FORMAT_COUNT
-  };
-  enum SYNC_DAY_WIFI_CHOICE {
-    SYNC_DAY_WIFI_AUTO = 0,
-    SYNC_DAY_WIFI_MANUAL = 1,
-    SYNC_DAY_WIFI_CHOICE_COUNT
-  };
+  enum UI_THEME { LYRA = 0, LYRA_CUSTOM = 1, LYRA_CAROUSEL = 2, UI_THEME_COUNT };
+  enum DATE_FORMAT { DATE_DD_MM_YYYY = 0, DATE_MM_DD_YYYY = 1, DATE_YYYY_MM_DD = 2, DATE_FORMAT_COUNT };
+  enum SYNC_DAY_WIFI_CHOICE { SYNC_DAY_WIFI_AUTO = 0, SYNC_DAY_WIFI_MANUAL = 1, SYNC_DAY_WIFI_CHOICE_COUNT };
   enum DAILY_GOAL_TARGET {
     DAILY_GOAL_15_MIN = 0,
     DAILY_GOAL_30_MIN = 1,
@@ -195,6 +189,7 @@ class CrossPointSettings {
     FLASHCARD_STUDY_DUE = 0,
     FLASHCARD_STUDY_SCHEDULED = 1,
     FLASHCARD_STUDY_INFINITE = 2,
+    FLASHCARD_STUDY_SEQUENTIAL = 3,
     FLASHCARD_STUDY_MODE_COUNT
   };
   enum FLASHCARD_SESSION_SIZE {
@@ -220,11 +215,8 @@ class CrossPointSettings {
     OPDS_FILENAME_TITLE_AUTHOR = 1,
     OPDS_FILENAME_FORMAT_COUNT
   };
-  enum SHORTCUT_LOCATION {
-    SHORTCUT_HOME = 0,
-    SHORTCUT_APPS = 1,
-    SHORTCUT_LOCATION_COUNT
-  };
+  enum SHORTCUT_LOCATION { SHORTCUT_HOME = 0, SHORTCUT_APPS = 1, SHORTCUT_LOCATION_COUNT };
+  enum HOME_BOOK_SOURCE { HOME_BOOKS_RECENTS = 0, HOME_BOOKS_FAVORITES = 1, HOME_BOOK_SOURCE_COUNT };
   enum SLEEP_IMAGE_ORDER { SLEEP_IMAGE_SHUFFLE = 0, SLEEP_IMAGE_SEQUENTIAL = 1, SLEEP_IMAGE_ORDER_COUNT };
 
   // Image rendering in EPUB reader
@@ -236,6 +228,8 @@ class CrossPointSettings {
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
+  // Use a full clean refresh when drawing the sleep screen
+  uint8_t cleanSleepRefresh = 1;
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
   uint8_t statusBarChapterPageCount = 1;
@@ -247,6 +241,7 @@ class CrossPointSettings {
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
+  uint8_t forceParagraphIndents = 0;
   uint8_t textAntiAliasing = 1;
   uint8_t textDarkness = TEXT_DARKNESS_NORMAL;
   // Short power button click behaviour
@@ -259,6 +254,7 @@ class CrossPointSettings {
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;
+  uint8_t frontButtonFollowOrientation = 0;
   // Front button remap (logical -> hardware)
   // Used by MappedInputManager to translate logical buttons into physical front buttons.
   uint8_t frontButtonBack = FRONT_HW_BACK;
@@ -287,6 +283,8 @@ class CrossPointSettings {
   char opdsUsername[64] = "";
   char opdsPassword[64] = "";
   uint8_t opdsFilenameFormat = OPDS_FILENAME_AUTHOR_TITLE;
+  uint8_t koSyncAutoPullOnOpen = 0;
+  uint8_t koSyncAutoPushOnClose = 0;
   // Hide battery percentage
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Page turn button long-press behavior
@@ -295,9 +293,11 @@ class CrossPointSettings {
   uint8_t uiTheme = LYRA_CUSTOM;
   // Experimental global dark mode for the device UI and supported readers.
   uint8_t darkMode = 0;
+  uint8_t antiGhostingExperimental = 0;
   // Home/apps helpers
   uint8_t displayDay = 1;
   uint8_t autoSyncDay = 1;
+  uint8_t homeBookSource = HOME_BOOKS_RECENTS;
   uint8_t syncDayWifiChoice = SYNC_DAY_WIFI_AUTO;
   uint8_t syncDayReminderStarts = SYNC_DAY_REMINDER_20;
   char sleepDirectory[128] = "";
@@ -308,11 +308,13 @@ class CrossPointSettings {
   uint8_t flashcardStudyMode = FLASHCARD_STUDY_DUE;
   uint8_t flashcardSessionSize = FLASHCARD_SESSION_ALL;
   uint8_t showStatsAfterReading = 1;
+  uint8_t moveCompletedBooks = 0;
   uint8_t achievementsEnabled = 1;
   uint8_t achievementPopups = 1;
   uint8_t appsHubShortcutOrder = 1;
   uint8_t browseFilesShortcut = SHORTCUT_HOME;
   uint8_t browseFilesShortcutOrder = 0;
+  // Legacy Stats shortcut fields retained for settings.json migration to readingStatsShortcut.
   uint8_t statsShortcut = SHORTCUT_HOME;
   uint8_t statsShortcutOrder = 2;
   uint8_t syncDayShortcut = SHORTCUT_HOME;
@@ -339,13 +341,18 @@ class CrossPointSettings {
   uint8_t favoritesShortcutOrder = 13;
   uint8_t flashcardsShortcut = SHORTCUT_APPS;
   uint8_t flashcardsShortcutOrder = 14;
+  uint8_t dictionaryShortcut = SHORTCUT_APPS;
+  uint8_t dictionaryShortcutOrder = 15;
   uint8_t fileTransferShortcut = SHORTCUT_APPS;
-  uint8_t fileTransferShortcutOrder = 15;
+  uint8_t fileTransferShortcutOrder = 16;
+  uint8_t screenCleanShortcut = SHORTCUT_APPS;
+  uint8_t screenCleanShortcutOrder = 17;
   uint8_t sleepShortcut = SHORTCUT_APPS;
-  uint8_t sleepShortcutOrder = 16;
+  uint8_t sleepShortcutOrder = 18;
   uint8_t opdsBrowserShortcut = SHORTCUT_HOME;
-  uint8_t opdsBrowserShortcutOrder = 17;
+  uint8_t opdsBrowserShortcutOrder = 19;
   uint8_t browseFilesShortcutVisible = 1;
+  // Legacy Stats shortcut visibility retained for settings.json migration to readingStatsShortcut.
   uint8_t statsShortcutVisible = 1;
   uint8_t syncDayShortcutVisible = 1;
   uint8_t settingsShortcutVisible = 1;
@@ -359,7 +366,9 @@ class CrossPointSettings {
   uint8_t bookmarksShortcutVisible = 1;
   uint8_t favoritesShortcutVisible = 1;
   uint8_t flashcardsShortcutVisible = 1;
+  uint8_t dictionaryShortcutVisible = 1;
   uint8_t fileTransferShortcutVisible = 1;
+  uint8_t screenCleanShortcutVisible = 1;
   uint8_t sleepShortcutVisible = 1;
   uint8_t opdsBrowserShortcutVisible = 1;
   // Sunlight fading compensation

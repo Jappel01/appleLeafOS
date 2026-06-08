@@ -9,6 +9,7 @@ mkdir -p "$BUILD_DIR"
 
 SOURCES=(
   "$ROOT_DIR/test/release_json_parser/ReleaseJsonParserTest.cpp"
+  "$ROOT_DIR/lib/JsonParser/FirmwareManifestJsonParser.cpp"
   "$ROOT_DIR/lib/JsonParser/ReleaseJsonParser.cpp"
   "$ROOT_DIR/lib/JsonParser/StreamingJsonParser.cpp"
 )

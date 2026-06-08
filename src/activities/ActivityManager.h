@@ -63,6 +63,9 @@ class ActivityManager {
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
   bool requestedUpdate = false;
+  uint8_t autoUiRefreshDebt = 0;
+  uint8_t deferredPreviousUiRefreshWeight = 0;
+  void requestUiTransitionRefresh(uint8_t previousWeight, uint8_t nextWeight);
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)

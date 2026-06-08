@@ -1,7 +1,6 @@
 #include "CrossPointWebServer.h"
 
 #include <ArduinoJson.h>
-#include <Epub.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <HalTiltSensor.h>
@@ -26,8 +25,11 @@
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/IfFoundPageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
+#include "util/BookCacheUtils.h"
+#include "util/IfFoundFile.h"
 
 namespace {
 // Folders/files to hide from the web interface file browser
@@ -77,15 +79,6 @@ size_t wsLastProgressSent = 0;
 String wsLastCompleteName;
 size_t wsLastCompleteSize = 0;
 unsigned long wsLastCompleteAt = 0;
-
-// Helper function to clear epub cache after upload
-void clearEpubCacheIfNeeded(const String& filePath) {
-  // Only clear cache for .epub files
-  if (FsHelpers::hasEpubExtension(filePath)) {
-    Epub(filePath.c_str(), "/.crosspoint").clearCache();
-    LOG_DBG("WEB", "Cleared epub cache for: %s", filePath.c_str());
-  }
-}
 
 String normalizeWebPath(const String& inputPath) {
   if (inputPath.isEmpty() || inputPath == "/") {
@@ -235,46 +228,54 @@ struct WebSettingDef {
   const char* key;
 };
 
-constexpr StrId OPT_SLEEP_SCREEN[] = {StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER,
-                                      StrId::STR_NONE_OPT, StrId::STR_COVER_CUSTOM};
+constexpr StrId OPT_SLEEP_SCREEN[] = {StrId::STR_DARK,
+                                      StrId::STR_LIGHT,
+                                      StrId::STR_CUSTOM,
+                                      StrId::STR_COVER,
+                                      StrId::STR_NONE_OPT,
+                                      StrId::STR_COVER_CUSTOM,
+                                      StrId::STR_READING_DASHBOARD,
+                                      StrId::STR_COVER_STATS,
+                                      StrId::STR_COVER_STATS_V2,
+                                      StrId::STR_CUSTOM_STATS,
+                                      StrId::STR_CUSTOM_STATS_V2};
 constexpr StrId OPT_FIT_CROP[] = {StrId::STR_FIT, StrId::STR_CROP};
 constexpr StrId OPT_SLEEP_FILTER[] = {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED};
 constexpr StrId OPT_HIDE_BATTERY[] = {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS};
-constexpr StrId OPT_REFRESH_FREQ[] = {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10,
-                                      StrId::STR_PAGES_15, StrId::STR_PAGES_30};
-constexpr StrId OPT_UI_THEME[] = {StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_CUSTOM};
+constexpr StrId OPT_REFRESH_FREQ[] = {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
+                                      StrId::STR_PAGES_30};
+constexpr StrId OPT_UI_THEME[] = {StrId::STR_THEME_LYRA, StrId::STR_THEME_LYRA_CUSTOM, StrId::STR_THEME_LYRA_CAROUSEL};
 constexpr StrId OPT_FONT_FAMILY[] = {StrId::STR_BOOKERLY, StrId::STR_NOTO_SANS, StrId::STR_LEXEND};
 constexpr StrId OPT_FONT_SIZE[] = {StrId::STR_X_SMALL, StrId::STR_SMALL, StrId::STR_MEDIUM, StrId::STR_LARGE,
                                    StrId::STR_X_LARGE};
 constexpr StrId OPT_LINE_SPACING[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE};
-constexpr StrId OPT_ALIGNMENT[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, StrId::STR_CENTER,
-                                   StrId::STR_ALIGN_RIGHT, StrId::STR_BOOK_S_STYLE};
+constexpr StrId OPT_ALIGNMENT[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, StrId::STR_CENTER, StrId::STR_ALIGN_RIGHT,
+                                   StrId::STR_BOOK_S_STYLE};
 constexpr StrId OPT_BIONIC[] = {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_SUBTLE};
 constexpr StrId OPT_ORIENTATION[] = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
                                      StrId::STR_LANDSCAPE_CCW};
-constexpr StrId OPT_TEXT_DARKNESS[] = {StrId::STR_NORMAL, StrId::STR_LEGACY_BW, StrId::STR_DARK,
-                                       StrId::STR_EXTRA_DARK};
+constexpr StrId OPT_TEXT_DARKNESS[] = {StrId::STR_NORMAL, StrId::STR_LEGACY_BW, StrId::STR_DARK, StrId::STR_EXTRA_DARK};
 constexpr StrId OPT_READER_REFRESH[] = {StrId::STR_REFRESH_MODE_AUTO, StrId::STR_REFRESH_MODE_FAST,
                                         StrId::STR_REFRESH_MODE_HALF, StrId::STR_REFRESH_MODE_FULL};
 constexpr StrId OPT_IMAGES[] = {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS};
 constexpr StrId OPT_SIDE_BUTTONS[] = {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV};
 constexpr StrId OPT_LONG_PRESS_BEHAVIOR[] = {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
                                              StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION};
-constexpr StrId OPT_SHORT_PWR[] = {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN,
-                                   StrId::STR_FORCE_REFRESH};
+constexpr StrId OPT_SHORT_PWR[] = {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH};
 constexpr StrId OPT_TILT_PAGE_TURN[] = {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_INVERTED};
 constexpr StrId OPT_SLEEP_TIMEOUT[] = {StrId::STR_MIN_1, StrId::STR_MIN_5, StrId::STR_MIN_10, StrId::STR_MIN_15,
                                        StrId::STR_MIN_30};
 constexpr StrId OPT_AUTO_MANUAL[] = {StrId::STR_REFRESH_MODE_AUTO, StrId::STR_MANUAL};
-constexpr StrId OPT_REMINDER_STARTS[] = {StrId::STR_STATE_OFF, StrId::STR_NUM_10, StrId::STR_NUM_20,
-                                         StrId::STR_NUM_30, StrId::STR_NUM_40, StrId::STR_NUM_50,
-                                         StrId::STR_NUM_60};
+constexpr StrId OPT_REMINDER_STARTS[] = {StrId::STR_STATE_OFF, StrId::STR_NUM_10, StrId::STR_NUM_20, StrId::STR_NUM_30,
+                                         StrId::STR_NUM_40,    StrId::STR_NUM_50, StrId::STR_NUM_60};
 constexpr StrId OPT_DATE_FORMAT[] = {StrId::STR_DATE_FORMAT_DD_MM_YYYY, StrId::STR_DATE_FORMAT_MM_DD_YYYY,
                                      StrId::STR_DATE_FORMAT_YYYY_MM_DD};
 constexpr StrId OPT_DAILY_GOAL[] = {StrId::STR_MIN_15, StrId::STR_MIN_30, StrId::STR_MIN_45, StrId::STR_MIN_60};
-constexpr StrId OPT_STUDY_MODE[] = {StrId::STR_DUE, StrId::STR_SCHEDULED, StrId::STR_RANDOM_PRACTICE};
+constexpr StrId OPT_STUDY_MODE[] = {StrId::STR_DUE, StrId::STR_SCHEDULED, StrId::STR_RANDOM_PRACTICE,
+                                    StrId::STR_SEQUENTIAL};
 constexpr StrId OPT_SESSION_SIZE[] = {StrId::STR_NUM_10, StrId::STR_NUM_20, StrId::STR_NUM_30, StrId::STR_NUM_50,
                                       StrId::STR_ALL};
+constexpr StrId OPT_HOME_BOOK_SOURCE[] = {StrId::STR_RECENTS, StrId::STR_FAVORITES};
 constexpr StrId OPT_SHORTCUT_LOCATION[] = {StrId::STR_HOME_LOCATION, StrId::STR_APPS};
 constexpr StrId OPT_KO_MATCH[] = {StrId::STR_FILENAME, StrId::STR_BINARY};
 constexpr StrId OPT_OPDS_FILENAME_FORMAT[] = {StrId::STR_AUTHOR_TITLE, StrId::STR_TITLE_AUTHOR};
@@ -283,13 +284,35 @@ constexpr StrId OPT_BAR_THICKNESS[] = {StrId::STR_PROGRESS_BAR_THIN, StrId::STR_
                                        StrId::STR_PROGRESS_BAR_THICK};
 constexpr StrId OPT_XTC_STATUS_BAR[] = {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP};
 
-#define WEB_TOGGLE(name, member, key, category) \
-  {name, category, WebSettingType::Toggle, &CrossPointSettings::member, nullptr, 0, 0, 0, 0, WebDynamicSetting::None, key}
-#define WEB_ENUM(name, member, opts, key, category)                                                        \
-  {name, category, WebSettingType::Enum, &CrossPointSettings::member, opts, static_cast<uint8_t>(sizeof(opts) / sizeof(opts[0])), 0, 0, 0, WebDynamicSetting::None, key}
+#define WEB_TOGGLE(name, member, key, category)                                                                       \
+  {name, category, WebSettingType::Toggle, &CrossPointSettings::member, nullptr, 0, 0, 0, 0, WebDynamicSetting::None, \
+   key}
+#define WEB_ENUM(name, member, opts, key, category)      \
+  {name,                                                 \
+   category,                                             \
+   WebSettingType::Enum,                                 \
+   &CrossPointSettings::member,                          \
+   opts,                                                 \
+   static_cast<uint8_t>(sizeof(opts) / sizeof(opts[0])), \
+   0,                                                    \
+   0,                                                    \
+   0,                                                    \
+   WebDynamicSetting::None,                              \
+   key}
 #define WEB_VALUE(name, member, lo, hi, inc, key, category) \
-  {name, category, WebSettingType::Value, &CrossPointSettings::member, nullptr, 0, lo, hi, inc, WebDynamicSetting::None, key}
-#define WEB_DYNAMIC(name, kind, type, opts, key, category)                                                  \
+  {                                                         \
+      name,                                                 \
+      category,                                             \
+      WebSettingType::Value,                                \
+      &CrossPointSettings::member,                          \
+      nullptr,                                              \
+      0,                                                    \
+      lo,                                                   \
+      hi,                                                   \
+      inc,                                                  \
+      WebDynamicSetting::None,                              \
+      key}
+#define WEB_DYNAMIC(name, kind, type, opts, key, category) \
   {name, category, type, nullptr, opts, static_cast<uint8_t>(sizeof(opts) / sizeof(opts[0])), 0, 0, 0, kind, key}
 #define WEB_DYNAMIC_STRING(name, kind, key, category) \
   {name, category, WebSettingType::String, nullptr, nullptr, 0, 0, 0, 0, kind, key}
@@ -300,10 +323,15 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
              StrId::STR_CAT_DISPLAY),
     WEB_ENUM(StrId::STR_SLEEP_COVER_FILTER, sleepScreenCoverFilter, OPT_SLEEP_FILTER, "sleepScreenCoverFilter",
              StrId::STR_CAT_DISPLAY),
+    WEB_TOGGLE(StrId::STR_CLEAN_SLEEP_REFRESH, cleanSleepRefresh, "cleanSleepRefresh", StrId::STR_CAT_DISPLAY),
     WEB_ENUM(StrId::STR_HIDE_BATTERY, hideBatteryPercentage, OPT_HIDE_BATTERY, "hideBatteryPercentage",
              StrId::STR_CAT_DISPLAY),
     WEB_ENUM(StrId::STR_REFRESH_FREQ, refreshFrequency, OPT_REFRESH_FREQ, "refreshFrequency", StrId::STR_CAT_DISPLAY),
     WEB_ENUM(StrId::STR_UI_THEME, uiTheme, OPT_UI_THEME, "uiTheme", StrId::STR_CAT_DISPLAY),
+    WEB_ENUM(StrId::STR_HOME_BOOK_SOURCE, homeBookSource, OPT_HOME_BOOK_SOURCE, "homeBookSource",
+             StrId::STR_CAT_DISPLAY),
+    WEB_TOGGLE(StrId::STR_ANTI_GHOSTING_EXPERIMENTAL, antiGhostingExperimental, "antiGhostingExperimental",
+               StrId::STR_CAT_DISPLAY),
     WEB_TOGGLE(StrId::STR_DARK_MODE, darkMode, "darkMode", StrId::STR_CAT_DISPLAY),
     WEB_TOGGLE(StrId::STR_SUNLIGHT_FADING_FIX, fadingFix, "fadingFix", StrId::STR_CAT_DISPLAY),
 
@@ -317,6 +345,8 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
     WEB_ENUM(StrId::STR_BIONIC_READING, bionicReading, OPT_BIONIC, "bionicReading", StrId::STR_CAT_READER),
     WEB_ENUM(StrId::STR_ORIENTATION, orientation, OPT_ORIENTATION, "orientation", StrId::STR_CAT_READER),
     WEB_TOGGLE(StrId::STR_EXTRA_SPACING, extraParagraphSpacing, "extraParagraphSpacing", StrId::STR_CAT_READER),
+    WEB_TOGGLE(StrId::STR_FORCE_PARAGRAPH_INDENTS, forceParagraphIndents, "forceParagraphIndents",
+               StrId::STR_CAT_READER),
     WEB_TOGGLE(StrId::STR_TEXT_AA, textAntiAliasing, "textAntiAliasing", StrId::STR_CAT_READER),
     WEB_ENUM(StrId::STR_TEXT_DARKNESS, textDarkness, OPT_TEXT_DARKNESS, "textDarkness", StrId::STR_CAT_READER),
     WEB_ENUM(StrId::STR_READER_REFRESH_MODE, readerRefreshMode, OPT_READER_REFRESH, "readerRefreshMode",
@@ -325,6 +355,8 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
 
     WEB_ENUM(StrId::STR_SIDE_BTN_LAYOUT, sideButtonLayout, OPT_SIDE_BUTTONS, "sideButtonLayout",
              StrId::STR_CAT_CONTROLS),
+    WEB_TOGGLE(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, frontButtonFollowOrientation, "frontButtonFollowOrientation",
+               StrId::STR_CAT_CONTROLS),
     WEB_ENUM(StrId::STR_LONG_PRESS_BEHAVIOR, longPressButtonBehavior, OPT_LONG_PRESS_BEHAVIOR,
              "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
     WEB_ENUM(StrId::STR_SHORT_PWR_BTN, shortPwrBtn, OPT_SHORT_PWR, "shortPwrBtn", StrId::STR_CAT_CONTROLS),
@@ -335,19 +367,18 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
 
     WEB_TOGGLE(StrId::STR_DISPLAY_DAY, displayDay, "displayDay", StrId::STR_APPS),
     WEB_ENUM(StrId::STR_CHOOSE_WIFI, syncDayWifiChoice, OPT_AUTO_MANUAL, "syncDayWifiChoice", StrId::STR_APPS),
-    WEB_ENUM(StrId::STR_SYNC_DAY_REMINDER_EVERY, syncDayReminderStarts, OPT_REMINDER_STARTS,
-             "syncDayReminderStarts", StrId::STR_APPS),
+    WEB_ENUM(StrId::STR_SYNC_DAY_REMINDER_EVERY, syncDayReminderStarts, OPT_REMINDER_STARTS, "syncDayReminderStarts",
+             StrId::STR_APPS),
     WEB_ENUM(StrId::STR_DATE_FORMAT, dateFormat, OPT_DATE_FORMAT, "dateFormat", StrId::STR_APPS),
     WEB_ENUM(StrId::STR_DAILY_GOAL, dailyGoalTarget, OPT_DAILY_GOAL, "dailyGoalTarget", StrId::STR_APPS),
     WEB_ENUM(StrId::STR_STUDY_MODE, flashcardStudyMode, OPT_STUDY_MODE, "flashcardStudyMode", StrId::STR_APPS),
     WEB_ENUM(StrId::STR_SESSION_SIZE, flashcardSessionSize, OPT_SESSION_SIZE, "flashcardSessionSize", StrId::STR_APPS),
     WEB_TOGGLE(StrId::STR_SHOW_AFTER_READING, showStatsAfterReading, "showStatsAfterReading", StrId::STR_APPS),
+    WEB_TOGGLE(StrId::STR_MOVE_COMPLETED_BOOKS, moveCompletedBooks, "moveCompletedBooks", StrId::STR_APPS),
     WEB_TOGGLE(StrId::STR_ENABLE_ACHIEVEMENTS, achievementsEnabled, "achievementsEnabled", StrId::STR_APPS),
     WEB_TOGGLE(StrId::STR_ACHIEVEMENT_POPUPS, achievementPopups, "achievementPopups", StrId::STR_APPS),
 
     WEB_ENUM(StrId::STR_BROWSE_FILES, browseFilesShortcut, OPT_SHORTCUT_LOCATION, "browseFilesShortcut",
-             StrId::STR_SHORTCUTS_SECTION),
-    WEB_ENUM(StrId::STR_STATS_SHORTCUT, statsShortcut, OPT_SHORTCUT_LOCATION, "statsShortcut",
              StrId::STR_SHORTCUTS_SECTION),
     WEB_ENUM(StrId::STR_SYNC_DAY, syncDayShortcut, OPT_SHORTCUT_LOCATION, "syncDayShortcut",
              StrId::STR_SHORTCUTS_SECTION),
@@ -373,8 +404,7 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
              StrId::STR_SHORTCUTS_SECTION),
     WEB_ENUM(StrId::STR_FILE_TRANSFER, fileTransferShortcut, OPT_SHORTCUT_LOCATION, "fileTransferShortcut",
              StrId::STR_SHORTCUTS_SECTION),
-    WEB_ENUM(StrId::STR_SLEEP, sleepShortcut, OPT_SHORTCUT_LOCATION, "sleepShortcut",
-             StrId::STR_SHORTCUTS_SECTION),
+    WEB_ENUM(StrId::STR_SLEEP, sleepShortcut, OPT_SHORTCUT_LOCATION, "sleepShortcut", StrId::STR_SHORTCUTS_SECTION),
 
     WEB_DYNAMIC_STRING(StrId::STR_KOREADER_USERNAME, WebDynamicSetting::KoUsername, "koUsername",
                        StrId::STR_KOREADER_SYNC),
@@ -384,13 +414,16 @@ constexpr WebSettingDef WEB_SETTINGS[] = {
                        StrId::STR_KOREADER_SYNC),
     WEB_DYNAMIC(StrId::STR_DOCUMENT_MATCHING, WebDynamicSetting::KoMatchMethod, WebSettingType::Enum, OPT_KO_MATCH,
                 "koMatchMethod", StrId::STR_KOREADER_SYNC),
+    WEB_TOGGLE(StrId::STR_KO_AUTO_PULL_ON_OPEN, koSyncAutoPullOnOpen, "koSyncAutoPullOnOpen", StrId::STR_KOREADER_SYNC),
+    WEB_TOGGLE(StrId::STR_KO_AUTO_PUSH_ON_CLOSE, koSyncAutoPushOnClose, "koSyncAutoPushOnClose",
+               StrId::STR_KOREADER_SYNC),
     WEB_ENUM(StrId::STR_OPDS_FILENAME_FORMAT, opdsFilenameFormat, OPT_OPDS_FILENAME_FORMAT, "opdsFilenameFormat",
              StrId::STR_KOREADER_SYNC),
 
     WEB_TOGGLE(StrId::STR_CHAPTER_PAGE_COUNT, statusBarChapterPageCount, "statusBarChapterPageCount",
                StrId::STR_CUSTOMISE_STATUS_BAR),
-    WEB_TOGGLE(StrId::STR_BOOK_PROGRESS_PERCENTAGE, statusBarBookProgressPercentage,
-               "statusBarBookProgressPercentage", StrId::STR_CUSTOMISE_STATUS_BAR),
+    WEB_TOGGLE(StrId::STR_BOOK_PROGRESS_PERCENTAGE, statusBarBookProgressPercentage, "statusBarBookProgressPercentage",
+               StrId::STR_CUSTOMISE_STATUS_BAR),
     WEB_ENUM(StrId::STR_PROGRESS_BAR, statusBarProgressBar, OPT_BOOK_CHAPTER_HIDE, "statusBarProgressBar",
              StrId::STR_CUSTOMISE_STATUS_BAR),
     WEB_ENUM(StrId::STR_PROGRESS_BAR_THICKNESS, statusBarProgressBarThickness, OPT_BAR_THICKNESS,
@@ -507,6 +540,11 @@ void CrossPointWebServer::begin() {
   server->on("/api/fonts", HTTP_GET, [this] { handleFontList(); });
   server->on("/api/fonts/upload", HTTP_POST, [this] { handleFontUpload(); }, [this] { handleFontUploadData(); });
   server->on("/api/fonts/delete", HTTP_POST, [this] { handleFontDelete(); });
+
+  // If Found contact-card endpoints
+  server->on("/if-found", HTTP_GET, [this] { handleIfFoundPage(); });
+  server->on("/api/if-found", HTTP_GET, [this] { handleGetIfFound(); });
+  server->on("/api/if-found", HTTP_POST, [this] { handlePostIfFound(); });
 
   // OPDS server endpoints
   server->on("/api/opds", HTTP_GET, [this] { handleGetOpdsServers(); });
@@ -796,6 +834,11 @@ void CrossPointWebServer::handleFontsPage() const {
   LOG_DBG("WEB", "Served fonts page");
 }
 
+void CrossPointWebServer::handleIfFoundPage() const {
+  sendHtmlContent(server.get(), IfFoundPageHtml, sizeof(IfFoundPageHtml));
+  LOG_DBG("WEB", "Served if_found page");
+}
+
 void CrossPointWebServer::handleFontList() const {
   const_cast<SdCardFontSystem&>(sdFontSystem).refreshIfDirty();
   const auto& families = sdFontSystem.registry().getFamilies();
@@ -841,6 +884,7 @@ void CrossPointWebServer::handleFontUploadData() {
     case UPLOAD_FILE_START: {
       esp_task_wdt_reset();
       String family = server->arg("family");
+      fontUpload.file = HalFile();
       fontUpload.valid = false;
       fontUpload.magicChecked = false;
       fontUpload.bytesWritten = 0;
@@ -854,6 +898,7 @@ void CrossPointWebServer::handleFontUploadData() {
       }
 
       String filename = upload.filename;
+      filename.replace(' ', '_');
       if (!FontInstaller::isValidCpfontFilename(filename.c_str())) {
         LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
         break;
@@ -920,7 +965,9 @@ void CrossPointWebServer::handleFontUploadData() {
         fontUpload.bytesWritten += fontUpload.bufferPos;
         fontUpload.bufferPos = 0;
       }
-      fontUpload.file.close();
+      if (fontUpload.file.isOpen()) {
+        fontUpload.file.close();
+      }
 
       if (!fontUpload.valid && !fontUpload.filePath.empty()) {
         Storage.remove(fontUpload.filePath.c_str());
@@ -931,7 +978,9 @@ void CrossPointWebServer::handleFontUploadData() {
     }
 
     case UPLOAD_FILE_ABORTED: {
-      fontUpload.file.close();
+      if (fontUpload.file.isOpen()) {
+        fontUpload.file.close();
+      }
       if (!fontUpload.filePath.empty()) {
         Storage.remove(fontUpload.filePath.c_str());
       }
@@ -974,6 +1023,72 @@ void CrossPointWebServer::handleFontDelete() {
     server->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     LOG_ERR("WEB", "Failed to delete font family: %s", familyName);
   }
+}
+
+void CrossPointWebServer::handleGetIfFound() const {
+  std::string path = IfFoundFile::findPath();
+  const bool exists = !path.empty();
+  if (!exists) {
+    path = IfFoundFile::DEFAULT_PATH;
+  }
+  const std::string content = exists ? IfFoundFile::readNormalized(path) : "";
+
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("{\"exists\":");
+  server->sendContent(exists ? "true" : "false");
+  server->sendContent(",\"path\":");
+  sendJsonEscaped(server.get(), path.c_str());
+  server->sendContent(",\"maxBytes\":");
+  char buffer[24];
+  snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(IfFoundFile::MAX_BYTES));
+  server->sendContent(buffer);
+  server->sendContent(",\"content\":");
+  sendJsonEscaped(server.get(), content.c_str());
+  server->sendContent("}");
+  server->sendContent("");
+  LOG_DBG("WEB", "Served if_found content path=%s exists=%d bytes=%u", path.c_str(), exists,
+          static_cast<unsigned>(content.size()));
+}
+
+void CrossPointWebServer::handlePostIfFound() {
+  const String content = server->arg("plain");
+  if (static_cast<size_t>(content.length()) > IfFoundFile::MAX_BYTES) {
+    server->send(413, "application/json", "{\"error\":\"Content is too large\"}");
+    return;
+  }
+
+  std::string path = IfFoundFile::findPath();
+  if (path.empty()) {
+    path = IfFoundFile::DEFAULT_PATH;
+  }
+
+  FsFile file;
+  if (!Storage.openFileForWrite("IFF", path, file)) {
+    server->send(500, "application/json", "{\"error\":\"Could not open if_found.txt for writing\"}");
+    return;
+  }
+
+  const size_t expected = static_cast<size_t>(content.length());
+  const size_t written = expected == 0 ? 0 : file.write(reinterpret_cast<const uint8_t*>(content.c_str()), expected);
+  file.close();
+
+  if (written != expected) {
+    server->send(500, "application/json", "{\"error\":\"Could not write the complete file\"}");
+    return;
+  }
+
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  server->sendContent("{\"ok\":true,\"path\":");
+  sendJsonEscaped(server.get(), path.c_str());
+  server->sendContent(",\"bytes\":");
+  char buffer[24];
+  snprintf(buffer, sizeof(buffer), "%u", static_cast<unsigned>(written));
+  server->sendContent(buffer);
+  server->sendContent("}");
+  server->sendContent("");
+  LOG_DBG("WEB", "Saved if_found content path=%s bytes=%u", path.c_str(), static_cast<unsigned>(written));
 }
 
 void CrossPointWebServer::handleFileListData() const {
@@ -1081,12 +1196,54 @@ void CrossPointWebServer::handleDownload() const {
     filename = nameBuf;
   }
 
-  server->setContentLength(file.size());
+  const size_t fileSize = file.size();
   server->sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  server->setContentLength(fileSize);
   server->send(200, contentType.c_str(), "");
 
   NetworkClient client = server->client();
-  client.write(file);
+  constexpr size_t chunkSize = 2048;
+  uint8_t buffer[chunkSize];
+  size_t sent = 0;
+
+  file.seekSet(0);
+  while (sent < fileSize && client.connected()) {
+    esp_task_wdt_reset();
+    const size_t remaining = fileSize - sent;
+    const size_t toRead = std::min(chunkSize, remaining);
+    const int bytesRead = file.read(buffer, toRead);
+    if (bytesRead <= 0) {
+      break;
+    }
+
+    size_t writtenForChunk = 0;
+    uint8_t zeroWriteRetries = 0;
+    while (writtenForChunk < static_cast<size_t>(bytesRead) && client.connected()) {
+      esp_task_wdt_reset();
+      const size_t wrote =
+          client.write(buffer + writtenForChunk, static_cast<size_t>(bytesRead) - writtenForChunk);
+      if (wrote == 0) {
+        if (++zeroWriteRetries >= 5) {
+          break;
+        }
+        delay(2);
+        continue;
+      }
+      zeroWriteRetries = 0;
+      writtenForChunk += wrote;
+    }
+
+    sent += writtenForChunk;
+    if (writtenForChunk != static_cast<size_t>(bytesRead)) {
+      break;
+    }
+    yield();
+  }
+
+  if (sent != fileSize) {
+    LOG_ERR("WEB", "Download size mismatch for %s: sent %u of %u bytes", itemPath.c_str(), (unsigned)sent,
+            (unsigned)fileSize);
+  }
   file.close();
 }
 
@@ -1244,7 +1401,7 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         String filePath = state.path;
         if (!filePath.endsWith("/")) filePath += "/";
         filePath += state.fileName;
-        clearEpubCacheIfNeeded(filePath);
+        clearBookCache(filePath.c_str());
       }
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
@@ -1390,7 +1547,7 @@ void CrossPointWebServer::handleRename() const {
     return;
   }
 
-  clearEpubCacheIfNeeded(itemPath);
+  clearBookCache(itemPath.c_str());
   const bool success = file.rename(newPath.c_str());
   file.close();
 
@@ -1483,7 +1640,7 @@ void CrossPointWebServer::handleMove() const {
     return;
   }
 
-  clearEpubCacheIfNeeded(itemPath);
+  clearBookCache(itemPath.c_str());
   const bool success = file.rename(newPath.c_str());
   file.close();
 
@@ -1602,7 +1759,7 @@ void CrossPointWebServer::handleDelete() const {
       // It's a file (or couldn't open as dir) — remove file
       if (f) f.close();
       success = Storage.remove(itemPath.c_str());
-      clearEpubCacheIfNeeded(itemPath);
+      clearBookCache(itemPath.c_str());
     }
 
     if (!success) {
@@ -2062,7 +2219,7 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
             wsLastCompleteSize = 0;
             wsLastCompleteAt = millis();
             LOG_DBG("WS", "Zero-byte upload complete: %s", filePath.c_str());
-            clearEpubCacheIfNeeded(filePath);
+            clearBookCache(filePath.c_str());
             wsServer->sendTXT(num, "DONE");
             wsLastProgressSent = 0;
             break;
@@ -2131,7 +2288,7 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         String filePath = wsUploadPath;
         if (!filePath.endsWith("/")) filePath += "/";
         filePath += wsUploadFileName;
-        clearEpubCacheIfNeeded(filePath);
+        clearBookCache(filePath.c_str());
 
         wsServer->sendTXT(num, "DONE");
         wsLastProgressSent = 0;

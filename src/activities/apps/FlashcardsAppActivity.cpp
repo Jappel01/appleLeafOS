@@ -34,13 +34,17 @@ std::string getSettingsSubtitle() {
     case CrossPointSettings::FLASHCARD_STUDY_INFINITE:
       studyModeLabel = tr(STR_RANDOM);
       break;
+    case CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL:
+      studyModeLabel = tr(STR_SEQUENTIAL);
+      break;
     case CrossPointSettings::FLASHCARD_STUDY_SCHEDULED:
     default:
       studyModeLabel = tr(STR_SCHEDULED);
       break;
   }
 
-  if (SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_INFINITE) {
+  if (SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_INFINITE ||
+      SETTINGS.flashcardStudyMode == CrossPointSettings::FLASHCARD_STUDY_SEQUENTIAL) {
     return studyModeLabel;
   }
 
@@ -92,8 +96,14 @@ void FlashcardsAppActivity::openSelectedEntry() {
 
 void FlashcardsAppActivity::onEnter() {
   Activity::onEnter();
+  renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
   refreshCounts();
   requestUpdate();
+}
+
+void FlashcardsAppActivity::onExit() {
+  renderer.requestNextRefresh(HalDisplay::HALF_REFRESH);
+  Activity::onExit();
 }
 
 void FlashcardsAppActivity::loop() {

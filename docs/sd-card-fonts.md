@@ -1,7 +1,8 @@
 # SD Card Fonts
 
-CPR-vCodex supports loading additional fonts from the SD card, including fonts
-with extended Unicode coverage (CJK, Cyrillic, Greek, etc.).
+CPR-vCodex supports loading additional fonts from the SD card. Common
+downloadable families are provided by CrossPoint, while the CPR-vCodex source is
+reserved for vCodex-only additions such as ChareInk.
 
 ## Installing Fonts
 
@@ -23,7 +24,7 @@ There are three ways to install fonts.
 
 ### Option 3: Manual SD card copy
 
-For the fastest full install, download
+For the fastest full vCodex-only install, download
 [`all-fonts.zip`](https://github.com/franssjz/cpr-vcodex/releases/download/sd-fonts-m1-b4/all-fonts.zip)
 and extract it into the root of the microSD card. It creates the ready-to-use
 `/fonts/<family>/*.cpfont` tree.
@@ -44,14 +45,14 @@ that case the copy in `/.fonts/` wins and the duplicate in `/fonts/` is ignored.
 ```text
 SD Card Root/
 |-- .fonts/                     Hidden root (preferred)
-|   `-- Literata/
-|       |-- Literata_12.cpfont
-|       |-- Literata_14.cpfont
-|       |-- Literata_16.cpfont
-|       `-- Literata_18.cpfont
+|   `-- ChareInk/
+|       |-- ChareInk_12.cpfont
+|       |-- ChareInk_14.cpfont
+|       |-- ChareInk_16.cpfont
+|       `-- ChareInk_18.cpfont
 `-- fonts/                      Visible root (equally valid)
-    `-- Merriweather/
-        |-- Merriweather_12.cpfont
+    `-- MyFont/
+        |-- MyFont_12.cpfont
         `-- ...
 ```
 
@@ -60,11 +61,11 @@ will appear under **Settings > Reader > Font Family**.
 
 ## Available Pre-Built Fonts
 
-The current list of pre-built fonts is maintained in
+The current list of CPR-vCodex-only pre-built fonts is maintained in
 `lib/EpdFont/scripts/sd-fonts.yaml` and published as CPR-vCodex release assets:
 
 - Stable device manifest: https://github.com/franssjz/cpr-vcodex/releases/tag/sd-fonts-m1-b4
-- Manual full package: https://github.com/franssjz/cpr-vcodex/releases/download/sd-fonts-m1-b4/all-fonts.zip
+- Manual vCodex-only package: https://github.com/franssjz/cpr-vcodex/releases/download/sd-fonts-m1-b4/all-fonts.zip
 - Device manifest: https://github.com/franssjz/cpr-vcodex/releases/download/sd-fonts-m1-b4/fonts.json
 
 The `sd-fonts-m<META>-b<BIN>` tag is tied to the manifest schema and `.cpfont`
@@ -106,13 +107,34 @@ To convert your own TrueType/OpenType fonts:
 | Preset | Coverage |
 |--------|----------|
 | `ascii` | U+0020-U+007E (Basic Latin) |
-| `latin-ext` | European languages (Latin + Extended-A/B) |
+| `latin1` | U+0080-U+00FF (Latin-1 Supplement) |
+| `latin-ext` | European languages (Latin + Extended-A/B + punctuation + ligatures) |
 | `greek` | Greek + Extended Greek |
 | `cyrillic` | Cyrillic + Supplement |
+| `georgian` | Georgian + Georgian Supplement |
+| `armenian` | Armenian |
+| `ethiopic` | Ethiopic + Extended |
+| `vietnamese` | Vietnamese subset (o/u horn and combining marks) |
+| `punctuation` | General punctuation (U+2000-U+206F) |
 | `cjk` | CJK Unified Ideographs + Hiragana + Katakana + Fullwidth |
-| `hangul` | Korean Hangul syllables |
+| `hangul` | Korean Hangul syllables + Jamo + Compatibility Jamo |
+| `cherokee` | Cherokee historic + supplement block |
+| `tifinagh` | Tifinagh |
+| `symbols` | Math, currency, arrows, box-drawing, misc symbols, dingbats |
+| `reading` | Literary fiction coverage: Latin, Greek, Cyrillic, math/symbol blocks, supplemental punctuation, and CJK quote marks |
 | `builtin` | Matches built-in Bookerly coverage exactly |
 
 Combine presets with commas: `--intervals latin-ext,greek,cyrillic`
+
+You can also specify arbitrary Unicode ranges directly:
+`--intervals latin-ext,(0x2100-0x214F)`
+
+To list all presets with codepoint counts:
+
+    python3 lib/EpdFont/scripts/fontconvert_sdcard.py --list-presets
+
+### Additional options
+
+`--force-autohint` - force FreeType's auto-hinter instead of the font's native hinting.
 
 Install custom fonts via WiFi upload or manual SD card copy.

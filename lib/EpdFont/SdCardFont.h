@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "EpdFont.h"
 #include "EpdFontData.h"
@@ -43,14 +45,16 @@ class SdCardFont {
   int prewarm(const char* utf8Text, uint8_t styleMask = 0x0F, bool metadataOnly = false);
 
   // Build a compact advance-only table for layout measurement.
-  // Extracts ALL unique codepoints from utf8Text (no MAX_PAGE_GLYPHS cap),
+  // Extracts ALL unique codepoints from text/words (no MAX_PAGE_GLYPHS cap),
   // batch-reads advanceX from SD, stores in a sorted per-style table.
   // Returns number of codepoints not found in font coverage.
   int buildAdvanceTable(const char* utf8Text, uint8_t styleMask = 0x0F);
+  int buildAdvanceTable(const std::vector<std::string>& words, bool includeHyphen, uint8_t styleMask = 0x0F);
 
   // Look up advanceX for a codepoint from the advance table.
   // Returns the 12.4 fixed-point advance, or 0 if not found.
   uint16_t getAdvance(uint32_t codepoint, uint8_t style) const;
+  bool getAdvance(uint32_t codepoint, uint8_t style, uint16_t* outAdvance) const;
 
   // Returns true if advance table is populated for at least one style.
   bool hasAdvanceTable() const;
@@ -70,6 +74,12 @@ class SdCardFont {
 
   // Returns true if the given style is present in this font file.
   bool hasStyle(uint8_t style) const;
+
+  // Resolve a requested style to the best available style in this font file.
+  uint8_t resolveStyle(uint8_t style) const;
+
+  // Resolve a requested style mask to the available style bits it will use.
+  uint8_t resolveStyleMask(uint8_t styleMask) const;
 
   // Number of styles present in this font file.
   uint8_t styleCount() const { return styleCount_; }
@@ -214,6 +224,9 @@ class SdCardFont {
   // Merge sortedNew (sorted by codepoint, no overlap with existing) into the
   // advance table for styleIdx, preserving sort order; cap-truncates the tail.
   void mergeIntoAdvanceTable(uint8_t styleIdx, const AdvanceEntry* sortedNew, uint32_t newCount);
+  int fetchAdvancesForCodepoints(uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
+  template <typename Iter>
+  int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask);
 
   Stats stats_;
   uint32_t contentHash_ = 0;

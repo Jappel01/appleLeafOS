@@ -7,6 +7,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <climits>
 
 #include "FontCacheManager.h"
 
@@ -20,21 +21,12 @@ std::vector<uint8_t> invertMonochromeBitmap(const uint8_t* bitmap, size_t size) 
   return inverted;
 }
 
+/**
+ * Resolves the requested style to the best available style in the given SD card font.
+ * Falls back gracefully when the font lacks the requested variant.
+ */
 uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style style) {
-  static const uint8_t kFallbacks[4][4] = {
-      {EpdFontFamily::REGULAR, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::BOLD_ITALIC},
-      {EpdFontFamily::BOLD, EpdFontFamily::BOLD_ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::ITALIC},
-      {EpdFontFamily::ITALIC, EpdFontFamily::REGULAR, EpdFontFamily::BOLD, EpdFontFamily::BOLD_ITALIC},
-      {EpdFontFamily::BOLD_ITALIC, EpdFontFamily::BOLD, EpdFontFamily::ITALIC, EpdFontFamily::REGULAR},
-  };
-
-  const uint8_t styleBits = static_cast<uint8_t>(style) & 0x03;
-  for (uint8_t candidate : kFallbacks[styleBits]) {
-    if (font.hasStyle(candidate)) {
-      return candidate;
-    }
-  }
-  return EpdFontFamily::REGULAR;
+  return font.resolveStyle(static_cast<uint8_t>(style));
 }
 
 }  // namespace
@@ -73,6 +65,19 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
   }
 }
 
+void GfxRenderer::ensureSdCardFontReady(int fontId, const std::vector<std::string>& words, bool includeHyphen,
+                                        uint8_t styleMask) const {
+  auto it = sdCardFonts_.find(fontId);
+  if (it == sdCardFonts_.end()) {
+    return;
+  }
+
+  const int missed = it->second->buildAdvanceTable(words, includeHyphen, styleMask);
+  if (missed > 0) {
+    LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
+  }
+}
+
 void GfxRenderer::begin() {
   frameBuffer = display.getFrameBuffer();
   if (!frameBuffer) {
@@ -85,6 +90,8 @@ void GfxRenderer::begin() {
   frameBufferSize = display.getBufferSize();
   bwBufferChunks.assign((frameBufferSize + BW_BUFFER_CHUNK_SIZE - 1) / BW_BUFFER_CHUNK_SIZE, nullptr);
 }
+
+bool GfxRenderer::isFontCacheScanning() const { return fontCacheManager_ && fontCacheManager_->isScanning(); }
 
 void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
   const auto it = fontMap.find(fontId);
@@ -137,7 +144,81 @@ enum class TextRotation { None, Rotated90CW };
 
 // Shared glyph rendering logic for normal and rotated text.
 // Coordinate mapping and cursor advance direction are selected at compile time via the template parameter.
-template <TextRotation rotation>
+// Render a glyph at 50% scale. Used for SUP/SUB style bits.
+//
+// Each destination pixel represents a 2x2 source block. Drawing when that block
+// contains ink preserves thin strokes that nearest-neighbor sampling can skip.
+//
+// The advance width is also halved in drawText() so layout reserves exactly the right
+// horizontal space for the scaled glyph.
+static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
+                             const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
+                             const bool pixelState, const EpdFontFamily::Style style) {
+  const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
+  if (!glyph) return;
+
+  const EpdFontData* fontData = fontFamily.getData(style);
+  const uint8_t* bitmap = renderer.getGlyphBitmap(fontData, glyph);
+  if (!bitmap) return;
+
+  const int srcW = glyph->width;
+  const int srcH = glyph->height;
+  const int dstW = (srcW + 1) / 2;  // ceil so odd-width glyphs aren't clipped
+  const int dstH = (srcH + 1) / 2;
+  // Scale the glyph bearing by the same factor so the scaled glyph sits at the correct
+  // pixel offset from the (already-shifted) cursor position.
+  const int baseX = cursorX + glyph->left / 2;
+  const int baseY = cursorY - glyph->top / 2;
+
+  if (fontData->is2Bit) {
+    // 2-bit packed format: 4 pixels per byte, MSB first, 2 bits per pixel.
+    // raw value: 0=white, 1=light-gray, 2=dark-gray, 3=black.
+    for (int dstY = 0; dstY < dstH; dstY++) {
+      const int srcY = dstY * 2;
+      for (int dstX = 0; dstX < dstW; dstX++) {
+        const int srcX = dstX * 2;
+        uint8_t coverage = 0;
+        uint8_t maxRaw = 0;
+        for (int sampleY = 0; sampleY < 2 && srcY + sampleY < srcH; sampleY++) {
+          for (int sampleX = 0; sampleX < 2 && srcX + sampleX < srcW; sampleX++) {
+            const int pos = (srcY + sampleY) * srcW + srcX + sampleX;
+            const uint8_t byte = bitmap[pos >> 2];
+            const uint8_t raw = (byte >> ((3 - (pos & 3)) * 2)) & 0x3;
+            coverage += raw;
+            if (raw > maxRaw) maxRaw = raw;
+          }
+        }
+        if (maxRaw >= 2 || coverage >= 2) {
+          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+        }
+      }
+    }
+  } else {
+    // 1-bit packed format: 8 pixels per byte, MSB first.
+    for (int dstY = 0; dstY < dstH; dstY++) {
+      const int srcY = dstY * 2;
+      for (int dstX = 0; dstX < dstW; dstX++) {
+        const int srcX = dstX * 2;
+        bool hasInk = false;
+        for (int sampleY = 0; sampleY < 2 && srcY + sampleY < srcH; sampleY++) {
+          for (int sampleX = 0; sampleX < 2 && srcX + sampleX < srcW; sampleX++) {
+            const int pos = (srcY + sampleY) * srcW + srcX + sampleX;
+            const uint8_t byte = bitmap[pos >> 3];
+            const uint8_t bit = 7 - (pos & 7);
+            if ((byte >> bit) & 1) {
+              hasInk = true;
+            }
+          }
+        }
+        if (hasInk) {
+          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+        }
+      }
+    }
+  }
+}
+
+template <TextRotation rotation = TextRotation::None>
 static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode renderMode,
                            const EpdFontFamily& fontFamily, const uint32_t cp, int cursorX, int cursorY,
                            const bool pixelState, const EpdFontFamily::Style style) {
@@ -192,11 +273,7 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           const uint8_t darkness = renderer.getTextDarkness();
 
           if (renderMode == GfxRenderer::BW) {
-            // Keep the first BW pass of Normal slightly less aggressive so it
-            // looks closer to the later AA/grayscale result. Darker modes keep
-            // the stronger fill to preserve their bolder appearance.
-            const uint8_t bwThreshold = (darkness == 0) ? 2 : 3;
-            if (bmpVal < bwThreshold) {
+            if (bmpVal < 3) {
               renderer.drawPixel(screenX, screenY, pixelState);
             }
           } else {
@@ -204,19 +281,19 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
             bool hitLsb = false;
 
             switch (darkness) {
-              case 1:  // Legacy BW: classic BW fill and classic AA mapping.
+              case 1:  // Crisp: keep the old lighter grayscale overlay.
                 hitMsb = (bmpVal == 2);
                 hitLsb = (bmpVal == 1);
                 break;
-              case 0:  // Normal: stronger baseline, close to the old "Dark"
+              case 0:  // Normal: CrossInk-style solid text with smooth AA.
                 hitMsb = (bmpVal == 1 || bmpVal == 2);
                 hitLsb = (bmpVal == 1);
                 break;
-              case 2:  // Dark: darken both AA buckets further
+              case 2:  // Dark: promote both AA buckets to darker ink.
                 hitMsb = (bmpVal == 1 || bmpVal == 2);
                 hitLsb = (bmpVal == 1 || bmpVal == 2);
                 break;
-              default:  // Extra Dark: keep the strongest AA mapping
+              default:  // Extra Dark: keep maximum AA darkening without touching white.
                 hitMsb = (bmpVal == 1 || bmpVal == 2);
                 hitLsb = (bmpVal == 1 || bmpVal == 2);
                 break;
@@ -361,7 +438,19 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     lastBaseTop = glyph ? glyph->top : 0;
     prevAdvanceFP = glyph ? glyph->advanceX : 0;  // 12.4 fixed-point
 
-    renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
+    if (isSupSub) {
+      // Halve the advance so the cursor advances by the same amount the scaled glyph
+      // actually occupies, keeping spacing correct without needing a separate smaller font.
+      prevAdvanceFP = (prevAdvanceFP + 1) / 2;
+    }
+
+    if (isSupSub) {
+      // yPos already carries the vertical offset applied by TextBlock::render().
+      renderCharScaled(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+    } else {
+      renderCharImpl<TextRotation::None>(*this, renderMode, font, cp, lastBaseX, yPos, black, style);
+    }
     prevCp = cp;
   }
 }
@@ -538,8 +627,20 @@ void GfxRenderer::drawPixelDither<Color::LightGray>(const int x, const int y) co
 }
 
 template <>
+void GfxRenderer::drawPixelDither<Color::MediumGray>(const int x, const int y) const {
+  static constexpr uint8_t BAYER_4X4[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+  drawPixel(x, y, BAYER_4X4[y & 3][x & 3] < static_cast<uint8_t>(Color::MediumGray));
+}
+
+template <>
 void GfxRenderer::drawPixelDither<Color::DarkGray>(const int x, const int y) const {
   drawPixel(x, y, (x + y) % 2 == 0);  // TODO: maybe find a better pattern?
+}
+
+template <>
+void GfxRenderer::drawPixelDither<Color::ExtraDarkGray>(const int x, const int y) const {
+  static constexpr uint8_t BAYER_4X4[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+  drawPixel(x, y, BAYER_4X4[y & 3][x & 3] < static_cast<uint8_t>(Color::ExtraDarkGray));
 }
 
 void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color) const {
@@ -554,10 +655,22 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
         drawPixelDither<Color::LightGray>(fillX, fillY);
       }
     }
+  } else if (color == Color::MediumGray) {
+    for (int fillY = y; fillY < y + height; fillY++) {
+      for (int fillX = x; fillX < x + width; fillX++) {
+        drawPixelDither<Color::MediumGray>(fillX, fillY);
+      }
+    }
   } else if (color == Color::DarkGray) {
     for (int fillY = y; fillY < y + height; fillY++) {
       for (int fillX = x; fillX < x + width; fillX++) {
         drawPixelDither<Color::DarkGray>(fillX, fillY);
+      }
+    }
+  } else if (color == Color::ExtraDarkGray) {
+    for (int fillY = y; fillY < y + height; fillY++) {
+      for (int fillX = x; fillX < x + width; fillX++) {
+        drawPixelDither<Color::ExtraDarkGray>(fillX, fillY);
       }
     }
   }
@@ -724,6 +837,13 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
   display.drawImage(invertedBitmap.data(), destX, destY, height, width);
 }
 
+void GfxRenderer::drawIconBlack(const uint8_t bitmap[], const int x, const int y, const int width,
+                                const int height) const {
+  const int destX = y;
+  const int destY = getScreenWidth() - width - x;
+  display.drawImageTransparent(bitmap, destX, destY, height, width);
+}
+
 void GfxRenderer::drawIconInverted(const uint8_t bitmap[], const int x, const int y, const int width,
                                    const int height) const {
   const int physX = y;
@@ -732,8 +852,8 @@ void GfxRenderer::drawIconInverted(const uint8_t bitmap[], const int x, const in
   const int imgH = width;
   const int srcStride = (imgW + 7) / 8;
 
-  if (physX + imgW <= 0 || physX >= HalDisplay::DISPLAY_WIDTH) return;
-  if (physY + imgH <= 0 || physY >= HalDisplay::DISPLAY_HEIGHT) return;
+  if (physX + imgW <= 0 || physX >= panelWidth) return;
+  if (physY + imgH <= 0 || physY >= panelHeight) return;
 
   const int baseByte = (physX >= 0) ? (physX >> 3) : -(((-physX) + 7) >> 3);
   const int bitShift = ((physX % 8) + 8) % 8;
@@ -743,15 +863,15 @@ void GfxRenderer::drawIconInverted(const uint8_t bitmap[], const int x, const in
 
   for (int row = 0; row < imgH; ++row) {
     const int destY = physY + row;
-    if (destY < 0 || destY >= HalDisplay::DISPLAY_HEIGHT) continue;
-    const int rowBase = destY * HalDisplay::DISPLAY_WIDTH_BYTES;
+    if (destY < 0 || destY >= panelHeight) continue;
+    const int rowBase = destY * panelWidthBytes;
     const int srcOffset = row * srcStride;
 
     if (bitShift == 0) {
       for (int col = 0; col < srcStride; ++col) {
         const int dst = baseByte + col;
         if (dst < 0) continue;
-        if (dst >= HalDisplay::DISPLAY_WIDTH_BYTES) break;
+        if (dst >= panelWidthBytes) break;
         uint8_t inv = ~bitmap[srcOffset + col];
         if (col == lastCol && trail > 0) inv &= trailMask;
         frameBuffer[rowBase + dst] |= inv;
@@ -764,10 +884,10 @@ void GfxRenderer::drawIconInverted(const uint8_t bitmap[], const int x, const in
         if (col == lastCol && trail > 0) inv &= trailMask;
         const int dstHi = baseByte + col;
         const int dstLo = dstHi + 1;
-        if (dstHi >= 0 && dstHi < HalDisplay::DISPLAY_WIDTH_BYTES) {
+        if (dstHi >= 0 && dstHi < panelWidthBytes) {
           frameBuffer[rowBase + dstHi] |= static_cast<uint8_t>(inv >> rsh);
         }
-        if (dstLo >= 0 && dstLo < HalDisplay::DISPLAY_WIDTH_BYTES) {
+        if (dstLo >= 0 && dstLo < panelWidthBytes) {
           frameBuffer[rowBase + dstLo] |= static_cast<uint8_t>(inv << lsh);
         }
       }
@@ -1035,9 +1155,9 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
   HalDisplay::RefreshMode effectiveRefreshMode = refreshMode;
-  if (nextRefreshFull) {
-    effectiveRefreshMode = HalDisplay::FULL_REFRESH;
-    nextRefreshFull = false;
+  if (nextRefreshOverridePending) {
+    effectiveRefreshMode = nextRefreshOverride;
+    nextRefreshOverridePending = false;
   }
   display.displayBuffer(effectiveRefreshMode, fadingFix);
 }
@@ -1046,20 +1166,44 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
                                        const EpdFontFamily::Style style) const {
   if (!text || maxWidth <= 0) return "";
 
-  std::string item = text;
   // U+2026 HORIZONTAL ELLIPSIS (UTF-8: 0xE2 0x80 0xA6)
   const char* ellipsis = "\xe2\x80\xa6";
-  int textWidth = getTextWidth(fontId, item.c_str(), style);
+  const int textWidth = getTextWidth(fontId, text, style);
   if (textWidth <= maxWidth) {
-    // Text fits, return as is
-    return item;
+    return text;
   }
 
-  while (!item.empty() && getTextWidth(fontId, (item + ellipsis).c_str(), style) >= maxWidth) {
-    utf8RemoveLastChar(item);
+  if (getTextWidth(fontId, ellipsis, style) > maxWidth) {
+    return ellipsis;
   }
 
-  return item.empty() ? ellipsis : item + ellipsis;
+  std::vector<size_t> charEnds;
+  const auto* start = reinterpret_cast<const unsigned char*>(text);
+  const auto* cursor = start;
+  while (*cursor != '\0') {
+    utf8NextCodepoint(&cursor);
+    charEnds.push_back(static_cast<size_t>(cursor - start));
+  }
+
+  size_t low = 0;
+  size_t high = charEnds.size();
+  while (low < high) {
+    const size_t mid = low + (high - low + 1) / 2;
+    std::string candidate(text, charEnds[mid - 1]);
+    candidate += ellipsis;
+    if (getTextWidth(fontId, candidate.c_str(), style) <= maxWidth) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  if (low == 0) {
+    return ellipsis;
+  }
+  std::string result(text, charEnds[low - 1]);
+  result += ellipsis;
+  return result;
 }
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,
@@ -1155,11 +1299,100 @@ int GfxRenderer::getScreenHeight() const {
   return panelWidth;
 }
 
+static bool logicalRectToPhysicalBounds(GfxRenderer::Orientation orientation, int lx, int ly, int lw, int lh,
+                                        uint16_t panelWidth, uint16_t panelHeight, int* outX0, int* outY0, int* outX1,
+                                        int* outY1) {
+  if (lw <= 0 || lh <= 0) return false;
+
+  int minX = INT_MAX;
+  int minY = INT_MAX;
+  int maxX = INT_MIN;
+  int maxY = INT_MIN;
+  const int corners[4][2] = {{lx, ly}, {lx + lw - 1, ly}, {lx, ly + lh - 1}, {lx + lw - 1, ly + lh - 1}};
+  for (const auto& corner : corners) {
+    int phyX;
+    int phyY;
+    rotateCoordinates(orientation, corner[0], corner[1], &phyX, &phyY, panelWidth, panelHeight);
+    if (phyX < minX) minX = phyX;
+    if (phyY < minY) minY = phyY;
+    if (phyX > maxX) maxX = phyX;
+    if (phyY > maxY) maxY = phyY;
+  }
+
+  if (minX < 0) minX = 0;
+  if (minY < 0) minY = 0;
+  if (maxX >= panelWidth) maxX = panelWidth - 1;
+  if (maxY >= panelHeight) maxY = panelHeight - 1;
+  if (minX > maxX || minY > maxY) return false;
+
+  *outX0 = minX;
+  *outY0 = minY;
+  *outX1 = maxX;
+  *outY1 = maxY;
+  return true;
+}
+
+size_t GfxRenderer::getRegionByteSize(int lx, int ly, int lw, int lh) const {
+  int x0, y0, x1, y1;
+  if (!logicalRectToPhysicalBounds(orientation, lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1)) {
+    return 0;
+  }
+
+  const int byteX0 = x0 / 8;
+  const int byteX1 = x1 / 8;
+  const int bytesPerRow = byteX1 - byteX0 + 1;
+  const int rowCount = y1 - y0 + 1;
+  return static_cast<size_t>(bytesPerRow) * static_cast<size_t>(rowCount);
+}
+
+bool GfxRenderer::copyRegionToBuffer(int lx, int ly, int lw, int lh, uint8_t* buf, size_t bufSize) const {
+  int x0, y0, x1, y1;
+  if (!logicalRectToPhysicalBounds(orientation, lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1)) {
+    return false;
+  }
+
+  const int byteX0 = x0 / 8;
+  const int byteX1 = x1 / 8;
+  const int bytesPerRow = byteX1 - byteX0 + 1;
+  const int rowCount = y1 - y0 + 1;
+  const size_t needed = static_cast<size_t>(bytesPerRow) * static_cast<size_t>(rowCount);
+  if (bufSize < needed || !frameBuffer || !buf) return false;
+
+  for (int row = 0; row < rowCount; row++) {
+    const uint8_t* src = frameBuffer + (y0 + row) * panelWidthBytes + byteX0;
+    memcpy(buf + row * bytesPerRow, src, bytesPerRow);
+  }
+  return true;
+}
+
+bool GfxRenderer::copyBufferToRegion(int lx, int ly, int lw, int lh, const uint8_t* buf, size_t bufSize) const {
+  int x0, y0, x1, y1;
+  if (!logicalRectToPhysicalBounds(orientation, lx, ly, lw, lh, panelWidth, panelHeight, &x0, &y0, &x1, &y1)) {
+    return false;
+  }
+
+  const int byteX0 = x0 / 8;
+  const int byteX1 = x1 / 8;
+  const int bytesPerRow = byteX1 - byteX0 + 1;
+  const int rowCount = y1 - y0 + 1;
+  const size_t needed = static_cast<size_t>(bytesPerRow) * static_cast<size_t>(rowCount);
+  if (bufSize < needed || !frameBuffer || !buf) return false;
+
+  for (int row = 0; row < rowCount; row++) {
+    uint8_t* dst = frameBuffer + (y0 + row) * panelWidthBytes + byteX0;
+    memcpy(dst, buf + row * bytesPerRow, bytesPerRow);
+  }
+  return true;
+}
+
 int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style style) const {
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     const uint8_t resolvedStyle = resolveSdCardStyle(*sdIt->second, style);
-    return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
+    uint16_t advance = 0;
+    if (sdIt->second->getAdvance(' ', resolvedStyle, &advance)) {
+      return fp4::toPixel(advance);
+    }
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -1177,7 +1410,10 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     const uint8_t resolvedStyle = resolveSdCardStyle(*sdIt->second, style);
-    return fp4::toPixel(sdIt->second->getAdvance(' ', resolvedStyle));
+    uint16_t advance = 0;
+    if (sdIt->second->getAdvance(' ', resolvedStyle, &advance)) {
+      return fp4::toPixel(advance);
+    }
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -1204,11 +1440,22 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     int32_t widthFP = 0;
+    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
-    while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
-      widthFP += sdIt->second->getAdvance(cp, styleIdx);
+    const char* scan = text;
+    bool complete = true;
+    while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&scan))) {
+      uint16_t advance = 0;
+      if (!sdIt->second->getAdvance(cp, styleIdx, &advance)) {
+        complete = false;
+        break;
+      }
+      int32_t advFP = advance;
+      widthFP += isSupSub ? (advFP + 1) / 2 : advFP;
     }
-    return fp4::toPixel(widthFP);
+    if (complete) {
+      return fp4::toPixel(widthFP);
+    }
   }
 
   const auto fontIt = fontMap.find(fontId);
@@ -1237,6 +1484,9 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
 
     const EpdGlyph* glyph = font.getGlyph(cp, style);
     prevAdvanceFP = glyph ? glyph->advanceX : 0;
+    if ((style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+      prevAdvanceFP = (prevAdvanceFP + 1) / 2;
+    }
     prevCp = cp;
   }
   widthPx += fp4::toPixel(prevAdvanceFP);  // final glyph's advance
