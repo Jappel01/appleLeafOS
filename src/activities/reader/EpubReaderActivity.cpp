@@ -8,7 +8,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <esp_system.h>
+#include <MemoryBudget.h>
 
 #include <iterator>
 #include <limits>
@@ -87,6 +87,22 @@ uint8_t getStatsChapterProgressPercent(const int currentPage, const int pageCoun
 
   return static_cast<uint8_t>(clampPercent(
       static_cast<int>((static_cast<float>(currentPage + 1) / static_cast<float>(pageCount)) * 100.0f + 0.5f)));
+}
+
+bool releaseReaderSdFontCachesForLowMemory(const GfxRenderer& renderer, const char* tag, const char* reason) {
+  const int fontId = SETTINGS.getReaderFontId();
+  if (!renderer.isSdCardFont(fontId)) {
+    return false;
+  }
+
+  const auto before = MemoryBudget::snapshot();
+  if (!renderer.releaseSdCardFontForLowMemory(fontId)) {
+    return false;
+  }
+  const auto after = MemoryBudget::snapshot();
+  LOG_DBG(tag, "Released SD font caches after %s: free=%u->%u maxAlloc=%u->%u", reason, before.freeHeap,
+          after.freeHeap, before.maxAllocHeap, after.maxAllocHeap);
+  return true;
 }
 
 void markStatsCompletedAtEnd(Epub& epub, int spineIndex) {
@@ -297,6 +313,7 @@ void EpubReaderActivity::onExit() {
   READING_STATS.endSession();
   ACHIEVEMENTS.recordSessionEnded(READING_STATS.getLastSessionSnapshot());
   bookmarkStore.save();
+  invalidateCurrentOverlayPageCache();
   section.reset();
   epub.reset();
 }
@@ -520,6 +537,28 @@ void EpubReaderActivity::requestCurrentPageFullRefresh() {
   requestUpdate();
 }
 
+void EpubReaderActivity::cacheCurrentPageForOverlay(const std::shared_ptr<Page>& page, const int marginLeft,
+                                                    const int marginTop) {
+  if (!page || !section || page->hasImages()) {
+    invalidateCurrentOverlayPageCache();
+    return;
+  }
+
+  currentOverlayPageCache = page;
+  currentOverlayPageSpineIndex = currentSpineIndex;
+  currentOverlayPageNumber = section->currentPage;
+  currentOverlayPageMarginLeft = marginLeft;
+  currentOverlayPageMarginTop = marginTop;
+}
+
+void EpubReaderActivity::invalidateCurrentOverlayPageCache() {
+  currentOverlayPageCache.reset();
+  currentOverlayPageSpineIndex = -1;
+  currentOverlayPageNumber = -1;
+  currentOverlayPageMarginLeft = 0;
+  currentOverlayPageMarginTop = 0;
+}
+
 std::shared_ptr<Page> EpubReaderActivity::loadCurrentPageForOverlay(int& outMarginLeft, int& outMarginTop) {
   outMarginLeft = 0;
   outMarginTop = 0;
@@ -535,11 +574,19 @@ std::shared_ptr<Page> EpubReaderActivity::loadCurrentPageForOverlay(int& outMarg
   outMarginLeft = orientedMarginLeft;
   outMarginTop = orientedMarginTop;
 
+  if (currentOverlayPageCache && currentOverlayPageSpineIndex == currentSpineIndex &&
+      currentOverlayPageNumber == section->currentPage && currentOverlayPageMarginLeft == orientedMarginLeft &&
+      currentOverlayPageMarginTop == orientedMarginTop) {
+    return currentOverlayPageCache;
+  }
+
   auto page = section->loadPageFromSectionFile();
   if (!page) {
     return nullptr;
   }
-  return std::shared_ptr<Page>(std::move(page));
+  auto sharedPage = std::shared_ptr<Page>(std::move(page));
+  cacheCurrentPageForOverlay(sharedPage, orientedMarginLeft, orientedMarginTop);
+  return sharedPage;
 }
 
 void EpubReaderActivity::saveCurrentPageBookmark() {
@@ -689,6 +736,8 @@ void EpubReaderActivity::applyReaderSettingsChanges(const ReaderSettingsSnapshot
     return;
   }
 
+  invalidateCurrentOverlayPageCache();
+
   if (fontChanged) {
     ensureSdFontLoaded();
   }
@@ -785,7 +834,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                  overlayMarginTop),
                              [this](const ActivityResult&) {
                                READING_STATS.resumeSession();
-                               requestCurrentPageFullRefresh();
+                               ReaderUtils::requestReaderUiTransitionRefresh(renderer);
+                               requestUpdate();
                              });
       break;
     }
@@ -803,7 +853,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                  overlayMarginTop),
                              [this](const ActivityResult&) {
                                READING_STATS.resumeSession();
-                               requestCurrentPageFullRefresh();
+                               ReaderUtils::requestReaderUiTransitionRefresh(renderer);
+                               requestUpdate();
                              });
       break;
     }
@@ -812,7 +863,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       startActivityForResult(std::make_unique<DictionaryActivity>(renderer, mappedInput),
                              [this](const ActivityResult&) {
                                READING_STATS.resumeSession();
-                               requestCurrentPageFullRefresh();
+                               ReaderUtils::requestReaderUiTransitionRefresh(renderer);
+                               requestUpdate();
                              });
       break;
     }
@@ -1071,6 +1123,7 @@ void EpubReaderActivity::markCurrentBookAsFinished() {
 
 void EpubReaderActivity::pageTurn(bool isForwardTurn) {
   READING_STATS.noteActivity();
+  invalidateCurrentOverlayPageCache();
   const int oldSpineIndex = currentSpineIndex;
   const int oldPage = section ? section->currentPage : nextPageNumber;
 
@@ -1179,6 +1232,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
         section.reset();
         return;
       }
+      releaseReaderSdFontCachesForLowMemory(renderer, "ERS", "section cache build");
     } else {
       LOG_DBG("ERS", "Cache found, skipping build...");
     }
@@ -1275,8 +1329,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
 
   {
-    auto p = section->loadPageFromSectionFile();
-    if (!p) {
+    auto loadedPage = section->loadPageFromSectionFile();
+    if (!loadedPage) {
       LOG_ERR("ERS", "Failed to load page from SD - clearing section cache");
       section->clearCache();
       section.reset();
@@ -1285,12 +1339,14 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       automaticPageTurnActive = false;
       return;
     }
+    auto page = std::shared_ptr<Page>(std::move(loadedPage));
 
     // Collect footnotes from the loaded page
-    currentPageFootnotes = std::move(p->footnotes);
+    currentPageFootnotes = std::move(page->footnotes);
+    cacheCurrentPageForOverlay(page, orientedMarginLeft, orientedMarginTop);
 
     const auto start = millis();
-    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    renderContents(page, orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
   silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
@@ -1327,13 +1383,20 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
     return;
   }
 
-  LOG_DBG("ERS", "Silently indexing next chapter: %d", nextSpineIndex);
+  if (!MemoryBudget::hasHeapForOptionalEpubRebuild("ERS", "silent next-chapter indexing", nextSpineIndex)) {
+    return;
+  }
+
+  LOG_DBG("ERS", "Silently indexing next chapter: %d (free=%u, maxAlloc=%u)", nextSpineIndex, ESP.getFreeHeap(),
+          ESP.getMaxAllocHeap());
   if (!nextSection.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                      SETTINGS.extraParagraphSpacing, SETTINGS.forceParagraphIndents,
                                      SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
                                      SETTINGS.hyphenationEnabled, bionicNormalLayout, SETTINGS.embeddedStyle,
                                      SETTINGS.imageRendering)) {
     LOG_ERR("ERS", "Failed silent indexing for chapter: %d", nextSpineIndex);
+  } else {
+    releaseReaderSdFontCachesForLowMemory(renderer, "ERS", "silent section cache build");
   }
 }
 
@@ -1360,7 +1423,7 @@ void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
     LOG_ERR("ERS", "Could not save progress!");
   }
 }
-void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
+void EpubReaderActivity::renderContents(std::shared_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
@@ -1368,16 +1431,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   fcm->resetStats();
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
-  const uint32_t heapBefore = esp_get_free_heap_size();
+  const auto heapBefore = MemoryBudget::snapshot();
   auto scope = fcm->createPrewarmScope();
   page->recordFontUsage(*fcm, SETTINGS.getReaderFontId(), SETTINGS.bionicReading);
   scope.endScanAndPrewarm();
-  const uint32_t heapAfter = esp_get_free_heap_size();
+  const auto heapAfter = MemoryBudget::snapshot();
   fcm->logStats("prewarm");
   const auto tPrewarm = millis();
 
-  LOG_DBG("ERS", "Heap: before=%lu after=%lu delta=%ld", heapBefore, heapAfter,
-          (int32_t)heapAfter - (int32_t)heapBefore);
+  LOG_DBG("ERS", "Heap prewarm: free=%u->%u delta=%ld maxAlloc=%u->%u delta=%ld", heapBefore.freeHeap,
+          heapAfter.freeHeap, static_cast<int32_t>(heapAfter.freeHeap) - static_cast<int32_t>(heapBefore.freeHeap),
+          heapBefore.maxAllocHeap, heapAfter.maxAllocHeap,
+          static_cast<int32_t>(heapAfter.maxAllocHeap) - static_cast<int32_t>(heapBefore.maxAllocHeap));
 
   const bool enableTextAA = SETTINGS.textAntiAliasing && !renderer.isDarkMode();
   const bool enableImageGrayscaleOnly = renderer.isDarkMode() && page->hasImages();
@@ -1431,10 +1496,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool needsGrayscale = enableTextAA || enableImageGrayscaleOnly;
 
   // Save BW buffer to reset framebuffer and controller state after grayscale data sync.
+  const auto bwStoreHeapBefore = MemoryBudget::snapshot();
   const bool storedBwBuffer = needsGrayscale && renderer.storeBwBuffer();
+  const auto bwStoreHeapAfter = MemoryBudget::snapshot();
   const auto tBwStore = millis();
   if (needsGrayscale && !storedBwBuffer) {
-    LOG_ERR("ERS", "Skipping grayscale enhancement: failed to store BW backup");
+    LOG_ERR("ERS", "Skipping grayscale enhancement: failed to store BW backup (free=%u maxAlloc=%u before=%u/%u)",
+            bwStoreHeapAfter.freeHeap, bwStoreHeapAfter.maxAllocHeap, bwStoreHeapBefore.freeHeap,
+            bwStoreHeapBefore.maxAllocHeap);
   }
 
   // grayscale rendering
