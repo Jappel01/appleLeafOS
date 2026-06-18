@@ -1,8 +1,4 @@
-> **CPR-vCodex is a personal fork of [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)**, focused on improving reading consistency, long-term reading habits, and overall reader experience without sacrificing simplicity or performance.
->
-> Instead of only tracking progress, this fork focuses on the full reading journey — consistency, habits, milestones, statistics, customization, and personal reading identity.
->
-> The project adds optional layers such as reading streaks, detailed analytics, achievements, heatmaps, Sync Day tracking, session history, and deeper personalization, while still allowing the interface to remain clean and distraction-free if preferred.
+> **Apple Leaf OS is a personal fork of [CPR-vCodex](https://github.com/franssjz/cpr-vcodex)**, focusing on adding tools that I find useful for reading the classics and improving intellectual and spiritual health.
 
 # CPR-vCodex
 
