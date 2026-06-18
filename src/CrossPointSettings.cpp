@@ -395,7 +395,7 @@ int CrossPointSettings::getReaderFontId() const {
     default:
       switch (fontSize) {
         case X_SMALL:
-          return BOOKERLY_10_FONT_ID;
+          return BOOKERLY_12_FONT_ID;
         case SMALL:
           return BOOKERLY_12_FONT_ID;
         case MEDIUM:
@@ -404,12 +404,12 @@ int CrossPointSettings::getReaderFontId() const {
         case LARGE:
           return BOOKERLY_16_FONT_ID;
         case EXTRA_LARGE:
-          return BOOKERLY_18_FONT_ID;
+          return BOOKERLY_16_FONT_ID;
       }
     case NOTOSANS:
       switch (fontSize) {
         case X_SMALL:
-          return NOTOSANS_10_FONT_ID;
+          return NOTOSANS_12_FONT_ID;
         case SMALL:
           return NOTOSANS_12_FONT_ID;
         case MEDIUM:
@@ -418,12 +418,12 @@ int CrossPointSettings::getReaderFontId() const {
         case LARGE:
           return NOTOSANS_16_FONT_ID;
         case EXTRA_LARGE:
-          return NOTOSANS_18_FONT_ID;
+          return NOTOSANS_16_FONT_ID;
       }
     case LEXEND:
       switch (fontSize) {
         case X_SMALL:
-          return LEXEND_10_FONT_ID;
+          return LEXEND_12_FONT_ID;
         case SMALL:
           return LEXEND_12_FONT_ID;
         case MEDIUM:
@@ -432,7 +432,7 @@ int CrossPointSettings::getReaderFontId() const {
         case LARGE:
           return LEXEND_16_FONT_ID;
         case EXTRA_LARGE:
-          return LEXEND_18_FONT_ID;
+          return LEXEND_16_FONT_ID;
       }
   }
 }
